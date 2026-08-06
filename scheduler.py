@@ -210,8 +210,11 @@ class Scheduler:
         """
         if task.future is None:
             task.future = asyncio.get_event_loop().create_future()
+        # 0 或负数 = 不限制（无限等待，超时由客户端自行控制）
         qw = self.queue_timeout if queue_wait is None else queue_wait
         it = self.infer_timeout if infer_timeout is None else infer_timeout
+        qw = qw if (qw and qw > 0) else None
+        it = it if (it and it > 0) else None
 
         # 阶段一：排队（等待 worker 取出开始执行），超时 -> 429
         try:
@@ -320,8 +323,10 @@ class Scheduler:
         try:
             if task.handler is None:
                 raise RuntimeError('task has no handler')
+            # infer_timeout 为 0/负数 = 不限制（无限等待，客户端自行掐超时）
+            it = self.infer_timeout if (self.infer_timeout and self.infer_timeout > 0) else None
             result = await asyncio.wait_for(
-                asyncio.shield(task.handler(task)), timeout=self.infer_timeout
+                asyncio.shield(task.handler(task)), timeout=it
             )
             task.result = result
             # 先解除 HTTP 等待方：handler 已返回（如 ComfyUI 已拿到 prompt_id），

@@ -102,7 +102,11 @@ class ComfyAdapter:
         """
         deadline = time.time() + self.watch_timeout
         try:
-            while time.time() < deadline:
+            while True:
+                # watch_timeout 为 0/负数 = 不限时（客户端自行控制超时）
+                if self.watch_timeout and self.watch_timeout > 0 and time.time() >= deadline:
+                    self._finish(prompt_id, 'failed', 500, 'draw timeout, no result')
+                    return
                 await asyncio.sleep(self.watch_interval)
                 try:
                     r = await self._client.get(f'{self.base_url}/history/{prompt_id}')
@@ -123,7 +127,6 @@ class ComfyAdapter:
                     else:
                         self._finish(prompt_id, 'done', 200, '')
                     return
-            self._finish(prompt_id, 'failed', 500, 'draw timeout, no result')
         except Exception as e:  # noqa: BLE001
             logger.exception('comfyui watch failed for %s', prompt_id)
             self._finish(prompt_id, 'failed', 500, str(e))

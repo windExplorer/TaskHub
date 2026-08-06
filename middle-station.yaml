@@ -5,8 +5,8 @@ server:
   host: 0.0.0.0
   port: 9000
   max_concurrent: 1          # 全局最大并发任务数（收紧避免 TTS/ComfyUI 同时挤爆显存）
-  queue_wait: 60             # 入队等待超时（秒），超时回 429；并发 1 时给足排队时间（60+60<150 安全）
-  infer_timeout: 60          # 单次推理超时（秒），超时回 504（正常 TTS 一段几秒~几十秒）
+  queue_wait: 100             # 入队等待超时（秒），超时回 429；0 = 不限制（由客户端自行掐超时）
+  infer_timeout: 100          # 单次推理超时（秒），超时回 504；0 = 不限制（由客户端自行掐超时）
   db_path: ./middle-station.db
   log_max_lines: 100
   frontend_dir: ./frontend
@@ -23,7 +23,7 @@ comfyui:
   base_url: http://127.0.0.1:8188    # 真实 ComfyUI
   serialize_concurrent: 1            # 同一时刻只放行 1 个 /prompt（单飞）
   watch_interval: 4                  # 轮询真实 /history 间隔（秒）
-  watch_timeout: 180                 # 出图跟踪超时（秒），卡死快速标失败（正常出图 <2min）
+  watch_timeout: 180                 # 出图跟踪超时（秒），卡死快速标失败；0 = 不限时（客户端自行控制）
 
 monitoring:
   gpu_threshold: 0.8                 # GPU 算力占用率 >80% 时自动降并发
