@@ -145,10 +145,10 @@
             <th class="px-3 py-2.5">类型</th>
             <th class="px-3 py-2.5 text-right">字数</th>
             <th class="px-3 py-2.5">状态</th>
-            <th class="px-3 py-2.5">创建时间</th>
-            <th class="px-3 py-2.5">完成时间</th>
             <th class="px-3 py-2.5 text-right">排队</th>
             <th class="px-3 py-2.5 text-right">运行</th>
+            <th class="px-3 py-2.5">创建时间</th>
+            <th class="px-3 py-2.5">完成时间</th>
             <th class="px-5 py-2.5">错误</th>
           </tr>
         </thead>
@@ -229,10 +229,10 @@ async function load() {
         <td class="px-3 py-2.5"><span class="text-xs px-2 py-0.5 rounded-md" style="background:${tc.bg}; color:${tc.fg}; border:1px solid ${tc.bd}">${TYPE_LABEL[t.task_type] || t.task_type}</span></td>
         <td class="px-3 py-2.5 text-right mono text-xs text-mute">${t.task_type === 'tts' ? (t.text_len || '–') + '字' : '–'}</td>
         <td class="px-3 py-2.5"><span class="st st-${t.status}">${STATUS_LABEL[t.status] || t.status}</span></td>
-        <td class="px-3 py-2.5 text-xs text-mute mono">${fmtTime(t.created_at)}</td>
-        <td class="px-3 py-2.5 text-xs text-mute mono">${fmtTime(t.finished_at)}</td>
         <td class="px-3 py-2.5 text-right mono text-xs text-mute">${fmt(t.queue_seconds)}s</td>
         <td class="px-3 py-2.5 text-right mono text-xs text-mute">${fmt(t.run_seconds)}s</td>
+        <td class="px-3 py-2.5 text-xs text-mute mono">${fmtTime(t.created_at)}</td>
+        <td class="px-3 py-2.5 text-xs text-mute mono">${fmtTime(t.finished_at)}</td>
         <td class="px-5 py-2.5 text-xs text-dim mono" title="${String(t.error || '').replace(/"/g, '&quot;')}">${String(t.error || '').slice(0, 40)}</td>`;
       body.appendChild(tr);
     });
