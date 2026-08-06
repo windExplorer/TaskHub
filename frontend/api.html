@@ -125,7 +125,7 @@ const GROUPS = [
     { method: 'GET', path: '/', title: '健康检查 + 采样率', note: '插件首次合成前必读，用返回的 sample_rate 覆盖本地配置（否则音调会变）。',
       resp: `{ "status": "ok", "model_loaded": true, "sample_rate": 24000 }` },
     { method: 'POST', path: '/inference_zero_shot', title: '零样本合成（主路径）',
-      note: 'multipart/form-data。tts_text 必填；prompt_wav 与 prompt_wav_path 二选一。prompt_text 缺省时按文件名从 voices 映射自动回退；含 LLM 污染标记会被净化丢弃。',
+      note: 'multipart/form-data。tts_text 必填；prompt_wav 与 prompt_wav_path 二选一。prompt_text 缺省时按文件名从 voices 映射自动回退；含 LLM 污染标记会被净化丢弃。成功响应头含 X-Queue-Position（该任务入队时刻前方任务数，含运行中）。',
       params: [
         ['tts_text', '必填', '目标文本（插件已分段，每段一次请求）'],
         ['prompt_text', '可选', '参考音频对应的纯人声文本'],
@@ -170,7 +170,7 @@ def synthesize(text, voice="xiaoyu.wav", max_retry=3):
   ]},
   { id: 'comfy', name: 'ComfyUI 标准接口（绘图插件）', desc: '契约来源 docs/comfyui-backend-api.md。/prompt 走单飞调度（同一时刻仅放行 serialize_concurrent 个），其余透传。', endpoints: [
     { method: 'POST', path: '/prompt', title: '提交绘图任务（核心，单飞）',
-      note: '排队中的请求内部阻塞等待槽位（不返回 429），提交成功后立即返回 prompt_id。校验失败透传真实 ComfyUI 状态码（常见 400）。',
+      note: '排队中的请求内部阻塞等待槽位（不返回 429），提交成功后立即返回 prompt_id。校验失败透传真实 ComfyUI 状态码（常见 400）。成功响应头含 X-Queue-Position（前方任务数，含运行中）。',
       body: `{ "prompt": { "4": { "class_type": "CheckpointLoaderSimple", "inputs": {} } },
   "client_id": "astrbot-comfyui-xxxx" }`,
       resp: `{ "prompt_id": "e1f2...32位hex" }` },
