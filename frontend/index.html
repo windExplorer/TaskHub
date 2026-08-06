@@ -332,8 +332,12 @@ function connectMonitor() {
     $('queue').textContent = d.queue_length;
     $('running').textContent = d.running;
     $('max-conc').textContent = `${d.effective_concurrent}`;
-    const overload = d.gpu_load > d.gpu_threshold;
-    $('backend-status').textContent = overload ? 'GPU 过载 · 降并发' : '运行正常';
+    const THROTTLE_TEXT = {
+      'normal': '运行正常', 'gpu': 'GPU 算力过载 · 降并发',
+      'vram': '显存不足 · 降并发', 'gpu+vram': 'GPU+显存告急 · 降并发',
+    };
+    const overload = (d.throttle_reason || 'normal') !== 'normal';
+    $('backend-status').textContent = THROTTLE_TEXT[d.throttle_reason] || '运行正常';
     $('backend-status').style.background = overload ? 'rgba(244,63,94,.15)' : 'rgba(52,211,153,.15)';
     $('backend-status').style.color = overload ? '#fb7185' : '#34d399';
     $('backend-status').style.borderColor = overload ? 'rgba(244,63,94,.35)' : 'rgba(52,211,153,.35)';

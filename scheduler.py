@@ -91,15 +91,23 @@ class Scheduler:
         queue_timeout: float = 30.0,
         infer_timeout: float = 120.0,
         gpu_threshold: float = 0.8,
+        vram_threshold: float = 0.25,
+        vram_min_free_gb: float = 1.0,
         gpu_load_provider: Optional[Callable[[], float]] = None,
+        vram_provider: Optional[Callable[[], Tuple[float, float]]] = None,
         gpu_scale_min_concurrent: int = 1,
     ):
         self.max_concurrent = max_concurrent
         self.queue_timeout = queue_timeout
         self.infer_timeout = infer_timeout
         self.gpu_threshold = gpu_threshold
+        self.vram_threshold = vram_threshold
+        self.vram_min_free_gb = vram_min_free_gb
         self.gpu_load_provider = gpu_load_provider or (lambda: 0.0)
+        # 返回 (可用显存GB, 总显存GB)
+        self.vram_provider = vram_provider or (lambda: (0.0, 0.0))
         self.gpu_scale_min_concurrent = max(1, gpu_scale_min_concurrent)
+        self.throttle_reason = 'normal'   # normal / gpu / vram / gpu+vram
 
         self._heap: List[Task] = []
         self.tasks: Dict[str, Task] = {}
@@ -234,13 +242,29 @@ class Scheduler:
     # ---------- 调度核心 ----------
 
     def _effective_concurrent(self) -> int:
-        """GPU 占用超过阈值时降并发，避免资源争抢。"""
-        gpu = 0.0
+        """并发决策：GPU 算力占用率 或 显存水位 任一超限即降并发，避免争抢/OOM。
+
+        - GPU 占用率 > gpu_threshold -> 降并发
+        - 可用显存比例 < vram_threshold 或 可用显存 < vram_min_free_gb -> 降并发
+        - 无 NVIDIA/显存数据（total=0）时忽略显存维度
+        """
+        reason = ''
         try:
             gpu = float(self.gpu_load_provider() or 0.0)
         except Exception:
             gpu = 0.0
         if gpu > self.gpu_threshold:
+            reason = 'gpu'
+        try:
+            free_gb, total_gb = self.vram_provider()
+        except Exception:
+            free_gb, total_gb = 0.0, 0.0
+        if total_gb > 0:
+            free_ratio = free_gb / total_gb
+            if free_ratio < self.vram_threshold or free_gb < self.vram_min_free_gb:
+                reason = 'vram' if not reason else 'gpu+vram'
+        self.throttle_reason = reason or 'normal'
+        if reason:
             return max(self.gpu_scale_min_concurrent, int(self.max_concurrent * 0.5))
         return self.max_concurrent
 
@@ -366,6 +390,7 @@ class Scheduler:
             'running': self.running_tasks,
             'max_concurrent': self.max_concurrent,
             'effective_concurrent': eff,
+            'throttle_reason': self.throttle_reason,
             'gpu_threshold': self.gpu_threshold,
             'gpu_load': round(float(self.gpu_load_provider() or 0.0), 3),
             'total_queued': self.total_queued,

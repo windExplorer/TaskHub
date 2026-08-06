@@ -208,6 +208,7 @@ def _register_routes(app: FastAPI):
             'running': st['running'],
             'max_concurrent': st['max_concurrent'],
             'effective_concurrent': st['effective_concurrent'],
+            'throttle_reason': st['throttle_reason'],
         }
 
     @app.get('/stats')
@@ -368,6 +369,7 @@ def _register_routes(app: FastAPI):
                     'running': st['running'],
                     'max_concurrent': st['max_concurrent'],
                     'effective_concurrent': st['effective_concurrent'],
+                    'throttle_reason': st['throttle_reason'],
                 })
                 await asyncio.sleep(1.0)
         except WebSocketDisconnect:
@@ -434,7 +436,10 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         queue_timeout=cfg.server.queue_wait,
         infer_timeout=cfg.server.infer_timeout,
         gpu_threshold=cfg.monitoring.gpu_threshold,
+        vram_threshold=cfg.monitoring.vram_threshold,
+        vram_min_free_gb=cfg.monitoring.vram_min_free_gb,
         gpu_load_provider=lambda: monitor.gpu,
+        vram_provider=lambda: (monitor.gpu_free_gb, monitor.gpu_total_gb),
     )
     storage = Storage(cfg.server.db_path)
     tts = TTSAdapter(cfg)

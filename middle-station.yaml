@@ -26,5 +26,7 @@ comfyui:
   watch_timeout: 600                 # 槽位跟踪超时（秒）
 
 monitoring:
-  gpu_threshold: 0.8                 # GPU 占用 >80% 时自动降并发
+  gpu_threshold: 0.8                 # GPU 算力占用率 >80% 时自动降并发
+  vram_threshold: 0.25               # 可用显存比例 <25% 时自动降并发（防 OOM）
+  vram_min_free_gb: 1.0              # 可用显存 <1GB 时自动降并发（防 OOM）
   interval_seconds: 2                # 采样间隔（秒）

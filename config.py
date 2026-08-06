@@ -63,7 +63,9 @@ class ComfyUIConfig:
 
 @dataclass
 class MonitoringConfig:
-    gpu_threshold: float = 0.8                 # GPU 占用率阈值（超过则降并发）
+    gpu_threshold: float = 0.8                 # GPU 算力占用率阈值（超过则降并发）
+    vram_threshold: float = 0.25               # 可用显存比例下限（低于则降并发，防 OOM）
+    vram_min_free_gb: float = 1.0              # 可用显存绝对下限（GB），低于则降并发
     interval_seconds: float = 2.0              # 采样间隔
 
 
@@ -125,6 +127,10 @@ class Config:
         m = data.get('monitoring', {}) or {}
         cfg.monitoring.gpu_threshold = _env_float(
             'MIDDLE_GPU_THRESHOLD', float(m.get('gpu_threshold', cfg.monitoring.gpu_threshold)))
+        cfg.monitoring.vram_threshold = _env_float(
+            'MIDDLE_VRAM_THRESHOLD', float(m.get('vram_threshold', cfg.monitoring.vram_threshold)))
+        cfg.monitoring.vram_min_free_gb = _env_float(
+            'MIDDLE_VRAM_MIN_FREE', float(m.get('vram_min_free_gb', cfg.monitoring.vram_min_free_gb)))
         cfg.monitoring.interval_seconds = _env_float(
             'MIDDLE_MONITOR_INTERVAL', float(m.get('interval_seconds', cfg.monitoring.interval_seconds)))
 
