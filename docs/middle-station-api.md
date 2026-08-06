@@ -231,13 +231,26 @@ Query：`filename`、`subfolder`、`type`（通常 `type=output`）。响应为�
 }
 ```
 
-任务状态：`queued`（排队中）/ `running`（运行中）/ `done`（完成）/ `failed`（失败）/ `timeout`（超时）/ `cancelled`（已取消）。
+任务状态：`queued`（排队中）/ `waiting`（等待单飞槽位）/ `running`（运行中）/ `done`（完成）/ `failed`（失败）/ `timeout`（超时）/ `cancelled`（已取消）。
 
-### 3.5 `GET /tasks?limit=200` — 任务列表
+### 3.5 `GET /tasks` — 全部任务（分页 + 筛选，查 SQLite 历史）
+
+Query 参数：
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `page` | 1 | 页码 |
+| `page_size` | 20 | 每页条数（最大 200） |
+| `task_type` | 空 | 按类型筛选：`tts` / `comfyui` |
+| `status` | 空 | 按状态筛选：`queued` / `waiting` / `running` / `done` / `failed` / `timeout` / `cancelled` |
+| `keyword` | 空 | 模糊搜索 task_id / 错误信息 / 类型 |
 
 ```json
-{ "tasks": [ /* 同 /queue 的 tasks 元素 */ ] }
+{ "total": 40, "page": 1, "page_size": 20, "pages": 2,
+  "tasks": [ /* 同 /queue 的 tasks 元素 */ ] }
 ```
+
+> 任务记录持久化于 SQLite（`server.db_path`），服务重启不丢失；请求参数存档在 `task_payloads` 表（一般不用看，仅作记录）。
 
 ### 3.6 `POST /tasks/{task_id}/promote?priority=-1` — 插队
 

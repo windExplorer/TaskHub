@@ -251,8 +251,12 @@ def _register_routes(app: FastAPI):
         return scheduler.get_status(limit=limit)
 
     @app.get('/tasks')
-    async def tasks_api(limit: int = 200):
-        return {'tasks': scheduler.get_status(limit=limit)['tasks']}
+    async def tasks_api(page: int = 1, page_size: int = 20, task_type: str = '',
+                        status: str = '', keyword: str = ''):
+        """分页 + 筛选查询历史任务（全量任务页 /ui/tasks.html 用）。"""
+        return await storage.query_tasks(
+            page=page, page_size=page_size,
+            task_type=task_type or None, status=status or None, keyword=keyword or None)
 
     @app.post('/tasks/{task_id}/promote')
     async def promote_task(task_id: str, priority: int = -1):

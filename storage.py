@@ -20,6 +20,9 @@ class Storage:
         self.db_path = db_path
         parent = os.path.dirname(os.path.abspath(db_path))
         os.makedirs(parent, exist_ok=True)
+        # 串行化写入：任务状态多次 record（queued->running->done）必须按序落库，
+        # 否则 to_thread 并发写入可能让旧状态覆盖新状态。
+        self._lock = asyncio.Lock()
         self._init_db()
 
     def _conn(self) -> sqlite3.Connection:
@@ -46,13 +49,36 @@ class Storage:
                     estimated_duration REAL
                 )"""
             )
+            # 请求参数存档（一般不看，仅作记录；含 tts_text / prompt_wav_path / 工作流等）
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS task_payloads (
+                    task_id TEXT PRIMARY KEY,
+                    task_type TEXT,
+                    payload TEXT,
+                    created_at REAL
+                )"""
+            )
             c.execute('CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_payloads_created ON task_payloads(created_at)')
 
     # ---------- 写入 ----------
 
     async def record(self, task) -> None:
-        await asyncio.to_thread(self._record_sync, task)
+        async with self._lock:
+            await asyncio.to_thread(self._record_sync, task)
+
+    @staticmethod
+    def _payload_json(task) -> Optional[str]:
+        """把任务请求参数序列化为 JSON 字符串（排除二进制，截断防爆表）。"""
+        try:
+            p = dict(task.payload or {})
+            if isinstance(p.get('prompt_wav'), tuple):   # 参考音频二进制不入库
+                p.pop('prompt_wav', None)
+            s = json.dumps(p, ensure_ascii=False, default=str)
+            return s[:8000]
+        except Exception:  # noqa: BLE001
+            return None
 
     def _record_sync(self, task) -> None:
         try:
@@ -79,6 +105,13 @@ class Storage:
                         task.estimated_duration,
                     ),
                 )
+                pj = self._payload_json(task)
+                if pj is not None:
+                    c.execute(
+                        """INSERT OR REPLACE INTO task_payloads
+                           (task_id, task_type, payload, created_at) VALUES (?,?,?,?)""",
+                        (task.task_id, task.task_type, pj, task.created_at),
+                    )
         except Exception as e:  # noqa: BLE001
             logger.error('storage record failed: %s', e)
 
@@ -119,6 +152,48 @@ class Storage:
         except Exception as e:  # noqa: BLE001
             logger.error('stats failed: %s', e)
             return {}
+
+    async def query_tasks(self, page: int = 1, page_size: int = 20,
+                          task_type: Optional[str] = None, status: Optional[str] = None,
+                          keyword: Optional[str] = None) -> Dict:
+        """分页 + 筛选查询历史任务（全量任务页用）。"""
+        return await asyncio.to_thread(
+            self._query_sync, page, page_size, task_type, status, keyword)
+
+    def _query_sync(self, page: int, page_size: int,
+                    task_type: Optional[str], status: Optional[str],
+                    keyword: Optional[str]) -> Dict:
+        page = max(1, int(page))
+        page_size = min(200, max(1, int(page_size)))
+        where: List[str] = []
+        args: List = []
+        if task_type:
+            where.append('task_type = ?')
+            args.append(task_type)
+        if status:
+            where.append('status = ?')
+            args.append(status)
+        if keyword:
+            where.append('(task_id LIKE ? OR error LIKE ? OR task_type LIKE ?)')
+            kw = f'%{keyword}%'
+            args.extend([kw, kw, kw])
+        wsql = (' WHERE ' + ' AND '.join(where)) if where else ''
+        try:
+            with self._conn() as c:
+                total = c.execute(
+                    f'SELECT COUNT(*) FROM tasks{wsql}', args).fetchone()[0]
+                rows = c.execute(
+                    f'SELECT * FROM tasks{wsql} ORDER BY created_at DESC LIMIT ? OFFSET ?',
+                    args + [page_size, (page - 1) * page_size]).fetchall()
+                return {
+                    'total': total, 'page': page, 'page_size': page_size,
+                    'pages': max(1, (total + page_size - 1) // page_size),
+                    'tasks': [dict(r) for r in rows],
+                }
+        except Exception as e:  # noqa: BLE001
+            logger.error('query tasks failed: %s', e)
+            return {'total': 0, 'page': page, 'page_size': page_size,
+                    'pages': 1, 'tasks': []}
 
     async def list_tasks(self, limit: int = 200) -> List[Dict]:
         return await asyncio.to_thread(self._list_sync, limit)

@@ -159,7 +159,10 @@
   <div class="rounded-2xl bg-card border border-card mb-8">
     <div class="flex items-center justify-between px-5 py-4 border-b border-card">
       <h2 class="text-sm font-medium text-sub">任务列表</h2>
-      <span id="task-count" class="text-[11px] text-dim"></span>
+      <div class="flex items-center gap-3">
+        <span id="task-count" class="text-[11px] text-dim"></span>
+        <a href="/ui/tasks.html" class="text-[11px] px-2.5 py-1 rounded-full bg-hover border border-card text-mute hover:text-main">查看全部任务 →</a>
+      </div>
     </div>
     <div class="overflow-x-auto">
       <table class="w-full text-sm">
@@ -233,6 +236,10 @@ $('btn-theme').onclick = () => applyTheme(document.documentElement.dataset.theme
 // ---------- 状态配色 ----------
 const STATUS_LABEL = { queued:'排队中', waiting:'等待中', running:'运行中', done:'完成', failed:'失败', timeout:'超时', cancelled:'已取消' };
 const TYPE_LABEL = { tts: '语音', comfyui: '绘图' };
+const TYPE_COLORS = {
+  tts:     { fg: '#0ea5e9', bg: 'rgba(14,165,233,.12)', bd: 'rgba(14,165,233,.35)' },   // 语音=蓝
+  comfyui: { fg: '#8b5cf6', bg: 'rgba(139,92,246,.12)', bd: 'rgba(139,92,246,.35)' },   // 绘图=紫
+};
 
 // ---------- Charts ----------
 let chartLoad = null, chartQueue = null;
@@ -344,9 +351,10 @@ function taskRow(t) {
   tr.dataset.id = t.task_id;
   tr.className = 'border-b border-card bg-hover';
   const canAct = t.status === 'queued';
+  const tc = TYPE_COLORS[t.task_type] || { fg: 'var(--accent)', bg: 'color-mix(in srgb, var(--accent) 12%, transparent)', bd: 'color-mix(in srgb, var(--accent) 25%, transparent)' };
   tr.innerHTML = `
     <td class="px-5 py-2.5 mono text-xs text-mute">${t.task_id}</td>
-    <td class="px-3 py-2.5"><span class="text-xs px-2 py-0.5 rounded-md" style="background:color-mix(in srgb, var(--accent) 12%, transparent); color:var(--accent); border:1px solid color-mix(in srgb, var(--accent) 25%, transparent)">${TYPE_LABEL[t.task_type] || t.task_type}</span></td>
+    <td class="px-3 py-2.5"><span class="text-xs px-2 py-0.5 rounded-md" style="background:${tc.bg}; color:${tc.fg}; border:1px solid ${tc.bd}">${TYPE_LABEL[t.task_type] || t.task_type}</span></td>
     <td class="px-3 py-2.5 mono text-xs text-sub">${t.priority}</td>
     <td class="px-3 py-2.5"><span class="st st-${t.status}">${STATUS_LABEL[t.status] || t.status}</span></td>
     <td class="px-3 py-2.5 text-right mono text-xs text-mute">${fmt(t.queue_seconds)}s</td>

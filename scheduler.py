@@ -162,6 +162,8 @@ class Scheduler:
         self._wakeup.set()
         self._emit_async(task)
         self.start()
+        logger.info('[task] %s queued (type=%s, priority=%s)',
+                    task.task_id, task.task_type, task.priority)
         return task
 
     async def submit(
@@ -265,6 +267,8 @@ class Scheduler:
             task.started_at = time.time()
             task.started_event.set()
             self._emit_async(task)
+            logger.info('[task] %s started (%s, queue_wait=%.1fs)',
+                        task.task_id, task.task_type, task.queue_seconds)
             asyncio.create_task(self._run_task(task))
 
     async def _run_task(self, task: Task):
@@ -287,6 +291,8 @@ class Scheduler:
                 task.status = 'done'
             else:
                 task.status = 'failed'  # handler 显式设置了非 200
+            logger.info('[task] %s finished as %s (code=%s, run=%.1fs)',
+                        task.task_id, task.status, task.status_code, task.run_seconds)
         except asyncio.TimeoutError:
             task.status = 'timeout'
             task.status_code = 504
@@ -341,6 +347,8 @@ class Scheduler:
             task.future.set_result(status_code)
         self._emit_async(task)
         self._wakeup.set()
+        logger.info('[task] %s confirmed %s (code=%s) by watch',
+                    task.task_id, status, status_code)
 
     # ---------- 查询 ----------
 
