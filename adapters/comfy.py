@@ -45,35 +45,48 @@ class ComfyAdapter:
     async def submit_prompt(self, task: Task):
         """worker 执行体：等待单飞槽位 -> 转发 -> 立即返回 {prompt_id}。
 
-        注意：槽位在整个任务生命周期内占用（提交 -> 执行 -> 出图），
-        由后台 _watch 轮询真实 /history 确认完成后释放。
+        单飞槽位覆盖任务完整生命周期（提交 -> 执行 -> 出图）：
+        - 在 acquire 前标记任务「等待中」（waiting）；
+        - 拿到槽位后标记「运行中」并提交；
+        - 槽位由后台 _watch 在出图完成/失败/超时后 release，期间后续任务阻塞等待，
+          保证同一时刻真实 ComfyUI 只跑一个任务。
         """
         payload = task.payload
-        async with self.sem:
-            try:
-                resp = await self._client.post(f'{self.base_url}/prompt', json=payload)
-            except httpx.TimeoutException as e:
-                raise BackendError(504, f'upstream submit timeout: {e}') from e
-            except httpx.RequestError as e:
-                raise BackendError(500, f'upstream unreachable: {e}') from e
-            if resp.status_code != 200:
-                # 上游校验失败（如 400），原样回传，插件依赖状态码/文案展示
-                raise BackendError(resp.status_code, resp.text[:300] or f'upstream http {resp.status_code}')
-            try:
-                data = resp.json()
-            except ValueError as e:
-                raise BackendError(500, f'bad upstream json: {e}') from e
-            pid = data.get('prompt_id')
-            if not pid:
-                raise BackendError(500, 'upstream returned no prompt_id')
-            self.states[pid] = 'running'
-            self.task_ids[pid] = task.task_id
-            self._watchers[pid] = task
-            # 提交成功：任务保持 running（pending_confirm），
-            # 等待 _watch 轮询真实出图结果后由 confirm_task() 终结。
-            task.pending_confirm = True
-            asyncio.create_task(self._watch(pid))
-            return data   # {'prompt_id': pid}，立即返回给插件
+        # 等待单飞槽位：标记「等待中」，让任务列表清晰展示排队（而非显示成运行中）
+        if self._scheduler is not None:
+            self._scheduler.set_task_status(task, 'waiting')
+        await self.sem.acquire()
+        if self._scheduler is not None:
+            self._scheduler.set_task_status(task, 'running')
+        try:
+            resp = await self._client.post(f'{self.base_url}/prompt', json=payload)
+        except httpx.TimeoutException as e:
+            self.sem.release()
+            raise BackendError(504, f'upstream submit timeout: {e}') from e
+        except httpx.RequestError as e:
+            self.sem.release()
+            raise BackendError(500, f'upstream unreachable: {e}') from e
+        if resp.status_code != 200:
+            # 上游校验失败（如 400），原样回传，插件依赖状态码/文案展示
+            self.sem.release()
+            raise BackendError(resp.status_code, resp.text[:300] or f'upstream http {resp.status_code}')
+        try:
+            data = resp.json()
+        except ValueError as e:
+            self.sem.release()
+            raise BackendError(500, f'bad upstream json: {e}') from e
+        pid = data.get('prompt_id')
+        if not pid:
+            self.sem.release()
+            raise BackendError(500, 'upstream returned no prompt_id')
+        self.states[pid] = 'running'
+        self.task_ids[pid] = task.task_id
+        self._watchers[pid] = task
+        # 提交成功：任务保持 running（pending_confirm），
+        # 等待 _watch 轮询真实出图结果后由 confirm_task() 终结；槽位由 _watch 释放。
+        task.pending_confirm = True
+        asyncio.create_task(self._watch(pid, self.sem))
+        return data   # {'prompt_id': pid}，立即返回给插件
 
     def _finish(self, prompt_id: str, status: str, code: int, error: str = ''):
         """出图终结：更新本地状态表，并把结果回写到调度器任务。"""
@@ -82,8 +95,11 @@ class ComfyAdapter:
         if task is not None and self._scheduler is not None:
             self._scheduler.confirm_task(task, status, code, error)
 
-    async def _watch(self, prompt_id: str):
-        """轮询真实 /history 直至该 prompt_id 出图；超时/异常标记 failed。"""
+    async def _watch(self, prompt_id: str, sem: Optional[asyncio.Semaphore] = None):
+        """轮询真实 /history 直至该 prompt_id 出图；超时/异常标记 failed。
+
+        sem 在任务终结时释放（单飞槽位覆盖完整生命周期）。
+        """
         deadline = time.time() + self.watch_timeout
         try:
             while time.time() < deadline:
@@ -111,6 +127,9 @@ class ComfyAdapter:
         except Exception as e:  # noqa: BLE001
             logger.exception('comfyui watch failed for %s', prompt_id)
             self._finish(prompt_id, 'failed', 500, str(e))
+        finally:
+            if sem is not None:
+                sem.release()
 
     # ---------- 只读 / 上传透传 ----------
 

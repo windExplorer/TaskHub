@@ -23,6 +23,7 @@
     --scroll-track: #18181b; --scroll-thumb: #3f3f46;
     --modal-bg: #18181b;
     --st-queued-bg: rgba(113,113,122,.25); --st-queued-fg: #d4d4d8; --st-queued-bd: rgba(113,113,122,.4);
+    --st-waiting-bg: rgba(251,191,36,.12); --st-waiting-fg: #fcd34d; --st-waiting-bd: rgba(251,191,36,.3);
     --st-running-bg: rgba(56,189,248,.15); --st-running-fg: #7dd3fc; --st-running-bd: rgba(56,189,248,.35);
     --st-done-bg: rgba(52,211,153,.15); --st-done-fg: #6ee7b7; --st-done-bd: rgba(52,211,153,.35);
     --st-failed-bg: rgba(244,63,94,.15); --st-failed-fg: #fda4af; --st-failed-bd: rgba(244,63,94,.35);
@@ -38,6 +39,7 @@
     --scroll-track: #f4f4f5; --scroll-thumb: #d4d4d8;
     --modal-bg: #ffffff;
     --st-queued-bg: rgba(113,113,122,.12); --st-queued-fg: #52525b; --st-queued-bd: rgba(113,113,122,.35);
+    --st-waiting-bg: rgba(217,119,6,.1); --st-waiting-fg: #b45309; --st-waiting-bd: rgba(217,119,6,.3);
     --st-running-bg: rgba(14,165,233,.12); --st-running-fg: #0369a1; --st-running-bd: rgba(14,165,233,.4);
     --st-done-bg: rgba(5,150,105,.12); --st-done-fg: #047857; --st-done-bd: rgba(5,150,105,.4);
     --st-failed-bg: rgba(225,29,72,.1); --st-failed-fg: #be123c; --st-failed-bd: rgba(225,29,72,.35);
@@ -58,6 +60,7 @@
 
   .st { display: inline-flex; padding: 1px 8px; border-radius: 6px; font-size: 12px; border: 1px solid; }
   .st-queued { background: var(--st-queued-bg); color: var(--st-queued-fg); border-color: var(--st-queued-bd); }
+  .st-waiting { background: var(--st-waiting-bg); color: var(--st-waiting-fg); border-color: var(--st-waiting-bd); }
   .st-running { background: var(--st-running-bg); color: var(--st-running-fg); border-color: var(--st-running-bd); }
   .st-done { background: var(--st-done-bg); color: var(--st-done-fg); border-color: var(--st-done-bd); }
   .st-failed { background: var(--st-failed-bg); color: var(--st-failed-fg); border-color: var(--st-failed-bd); }
@@ -228,7 +231,7 @@ function applyTheme(t) {
 $('btn-theme').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 
 // ---------- 状态配色 ----------
-const STATUS_LABEL = { queued:'排队中', running:'运行中', done:'完成', failed:'失败', timeout:'超时', cancelled:'已取消' };
+const STATUS_LABEL = { queued:'排队中', waiting:'等待中', running:'运行中', done:'完成', failed:'失败', timeout:'超时', cancelled:'已取消' };
 const TYPE_LABEL = { tts: '语音', comfyui: '绘图' };
 
 // ---------- Charts ----------

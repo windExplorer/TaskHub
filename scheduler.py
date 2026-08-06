@@ -316,6 +316,15 @@ class Scheduler:
             self._emit_async(task)
             self._wakeup.set()
 
+    def set_task_status(self, task: Task, status: str, status_code: Optional[int] = None):
+        """更新任务状态并广播（供适配层在 handler 内部标记子状态，如等待单飞槽位）。"""
+        if task.status == status:
+            return
+        task.status = status
+        if status_code is not None:
+            task.status_code = status_code
+        self._emit_async(task)
+
     def confirm_task(self, task: Task, status: str = 'done', status_code: int = 200,
                      error: str = ''):
         """由后台 watch 回调调用：真实任务已终结（如 ComfyUI 出图完成/失败/超时）。"""
