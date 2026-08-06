@@ -145,7 +145,9 @@ async def _submit(task: Task, media_type: str = 'application/octet-stream',
     result, code, err = await scheduler.submit(
         task, queue_wait=queue_wait, infer_timeout=infer_timeout)
     if code == 200:
-        return Response(content=result, media_type=media_type)
+        resp = Response(content=result, media_type=media_type)
+        resp.headers['X-Queue-Position'] = str(task.queue_position)
+        return resp
     raise HTTPException(status_code=code, detail=err or f'http {code}')
 
 
@@ -321,7 +323,9 @@ def _register_routes(app: FastAPI):
         result, code, err = await scheduler.submit(
             task, queue_wait=None, infer_timeout=cfg.server.infer_timeout)
         if code == 200:
-            return JSONResponse(result)
+            resp = JSONResponse(result)
+            resp.headers['X-Queue-Position'] = str(task.queue_position)
+            return resp
         raise HTTPException(status_code=code, detail=err or f'http {code}')
 
     @app.post('/upload/image')

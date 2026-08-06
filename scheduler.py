@@ -44,8 +44,11 @@ class Task:
     future: Any = field(default=None, compare=False)
     started_event: Any = field(default=None, compare=False)
     pending_confirm: bool = field(default=False, compare=False)
-    # True 表示 handler 已把请求交给真实后端（如 ComfyUI 已拿到 prompt_id），
-    # 任务保持 running，等待后台 watch 通过 confirm_task() 终结（出图完成/失败/超时）。
+    queue_position: int = field(default=0, compare=False)
+    # 入队时记录「前方还有几个任务（含进行中）」，供响应头 X-Queue-Position 返回。
+    # pending_confirm True 表示 handler 已把请求交给真实后端（如 ComfyUI 已拿到
+    # prompt_id），任务保持 running，等待后台 watch 通过 confirm_task() 终结
+    #（出图完成/失败/超时）。
 
     def __post_init__(self):
         self.started_event = asyncio.Event()
@@ -166,13 +169,31 @@ class Scheduler:
         task.future = loop.create_future()
         heapq.heappush(self._heap, task)
         self.tasks[task.task_id] = task
+        task.queue_position = self.position_of(task)
         self.total_queued += 1
         self._wakeup.set()
         self._emit_async(task)
         self.start()
-        logger.info('[task] %s queued (type=%s, priority=%s)',
-                    task.task_id, task.task_type, task.priority)
+        logger.info('[task] %s queued (type=%s, priority=%s, position=%d)',
+                    task.task_id, task.task_type, task.priority, task.queue_position)
         return task
+
+    def position_of(self, task: Task) -> int:
+        """提交时刻该任务前方还有几个任务（含进行中）。
+
+        运行中的任务全部算前方；排队/等待中的按 (priority, created_at) 判定是否排在它前面。
+        """
+        key = (task.priority, task.created_at)
+        ahead = 0
+        for t in self.tasks.values():
+            if t is task:
+                continue
+            if t.status == 'running':
+                ahead += 1
+            elif t.status in ('queued', 'waiting'):
+                if (t.priority, t.created_at) < key:
+                    ahead += 1
+        return ahead
 
     async def submit(
         self,
