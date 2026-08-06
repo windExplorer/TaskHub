@@ -43,6 +43,9 @@ class Task:
     finished_at: float = field(default=0.0, compare=False)
     future: Any = field(default=None, compare=False)
     started_event: Any = field(default=None, compare=False)
+    pending_confirm: bool = field(default=False, compare=False)
+    # True 表示 handler 已把请求交给真实后端（如 ComfyUI 已拿到 prompt_id），
+    # 任务保持 running，等待后台 watch 通过 confirm_task() 终结（出图完成/失败/超时）。
 
     def __post_init__(self):
         self.started_event = asyncio.Event()
@@ -272,6 +275,14 @@ class Scheduler:
                 asyncio.shield(task.handler(task)), timeout=self.infer_timeout
             )
             task.result = result
+            # 先解除 HTTP 等待方：handler 已返回（如 ComfyUI 已拿到 prompt_id），
+            # 提交方立即拿到响应，无需等任务终结。
+            if task.future is not None and not task.future.done():
+                task.future.set_result(task.status_code)
+            if task.pending_confirm:
+                # 已提交真实后端，任务保持 running，由 confirm_task() 终结
+                # （如 ComfyUI 出图完成 / 失败 / 超时）。
+                return
             if task.status_code == 200:
                 task.status = 'done'
             else:
@@ -295,6 +306,8 @@ class Scheduler:
             task.error = str(e)
             logger.exception('task %s failed: %s', task.task_id, e)
         finally:
+            if task.pending_confirm:
+                return  # 终结交给 confirm_task（它负责减计数 / future / emit）
             task.finished_at = time.time()
             self.running_tasks = max(0, self.running_tasks - 1)
             self.total_completed += 1
@@ -302,6 +315,23 @@ class Scheduler:
                 task.future.set_result(task.status_code)
             self._emit_async(task)
             self._wakeup.set()
+
+    def confirm_task(self, task: Task, status: str = 'done', status_code: int = 200,
+                     error: str = ''):
+        """由后台 watch 回调调用：真实任务已终结（如 ComfyUI 出图完成/失败/超时）。"""
+        if not task.pending_confirm:
+            return
+        task.pending_confirm = False
+        task.status = status
+        task.status_code = status_code
+        task.error = error
+        task.finished_at = time.time()
+        self.running_tasks = max(0, self.running_tasks - 1)
+        self.total_completed += 1
+        if task.future is not None and not task.future.done():
+            task.future.set_result(status_code)
+        self._emit_async(task)
+        self._wakeup.set()
 
     # ---------- 查询 ----------
 

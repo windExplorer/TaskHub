@@ -434,7 +434,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     )
     storage = Storage(cfg.server.db_path)
     tts = TTSAdapter(cfg)
-    comfy = ComfyAdapter(cfg)
+    comfy = ComfyAdapter(cfg, scheduler)
     broadcaster = WSBroadcaster()
     log_buffer = LogBuffer(cfg.server.log_max_lines)
 

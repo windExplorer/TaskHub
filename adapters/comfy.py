@@ -7,6 +7,8 @@
 - POST /upload/image：透传（multipart 原样转发，保证 name 落到真实 ComfyUI input 目录）。
 - GET /history、GET /view：透传。
 - 槽位占用覆盖任务完整生命周期（提交 -> 执行 -> 出图），由 _watch 轮询释放。
+- 任务状态跟随真实出图进度：提交后任务保持 running，后台 _watch 轮询真实 /history，
+  出图完成才由 scheduler.confirm_task() 置为 done；超时/执行失败置 failed。
 """
 import asyncio
 import logging
@@ -21,13 +23,15 @@ logger = logging.getLogger('middle_station.comfyui')
 
 
 class ComfyAdapter:
-    def __init__(self, cfg):
+    def __init__(self, cfg, scheduler=None):
         self.base_url = cfg.comfyui.base_url.rstrip('/')
         self.watch_interval = cfg.comfyui.watch_interval
         self.watch_timeout = cfg.comfyui.watch_timeout
+        self._scheduler = scheduler
         self.sem = asyncio.Semaphore(cfg.comfyui.serialize_concurrent)
         self.states: Dict[str, str] = {}      # prompt_id -> queued/running/done/failed
         self.task_ids: Dict[str, str] = {}    # prompt_id -> task_id
+        self._watchers: Dict[str, Task] = {}  # prompt_id -> task（用于回写状态）
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=10.0, read=cfg.server.infer_timeout + 30.0,
@@ -64,11 +68,22 @@ class ComfyAdapter:
                 raise BackendError(500, 'upstream returned no prompt_id')
             self.states[pid] = 'running'
             self.task_ids[pid] = task.task_id
+            self._watchers[pid] = task
+            # 提交成功：任务保持 running（pending_confirm），
+            # 等待 _watch 轮询真实出图结果后由 confirm_task() 终结。
+            task.pending_confirm = True
             asyncio.create_task(self._watch(pid))
             return data   # {'prompt_id': pid}，立即返回给插件
 
+    def _finish(self, prompt_id: str, status: str, code: int, error: str = ''):
+        """出图终结：更新本地状态表，并把结果回写到调度器任务。"""
+        self.states[prompt_id] = status
+        task = self._watchers.pop(prompt_id, None)
+        if task is not None and self._scheduler is not None:
+            self._scheduler.confirm_task(task, status, code, error)
+
     async def _watch(self, prompt_id: str):
-        """轮询真实 /history 直至该 prompt_id 完成；超时标记 failed。"""
+        """轮询真实 /history 直至该 prompt_id 出图；超时/异常标记 failed。"""
         deadline = time.time() + self.watch_timeout
         try:
             while time.time() < deadline:
@@ -83,12 +98,19 @@ class ComfyAdapter:
                     hist = r.json()
                 except ValueError:
                     continue
-                if prompt_id in hist:
-                    self.states[prompt_id] = 'done'
+                entry = hist.get(prompt_id) if isinstance(hist, dict) else None
+                if entry is not None:
+                    status_str = (entry.get('status') or {}).get('status_str', 'success')
+                    if status_str == 'error':
+                        logger.error('comfyui task %s execution error', prompt_id)
+                        self._finish(prompt_id, 'failed', 500, 'comfyui execution error')
+                    else:
+                        self._finish(prompt_id, 'done', 200, '')
                     return
-            self.states[prompt_id] = 'failed'
-        except Exception:  # noqa: BLE001
-            self.states[prompt_id] = 'failed'
+            self._finish(prompt_id, 'failed', 500, 'draw timeout, no result')
+        except Exception as e:  # noqa: BLE001
+            logger.exception('comfyui watch failed for %s', prompt_id)
+            self._finish(prompt_id, 'failed', 500, str(e))
 
     # ---------- 只读 / 上传透传 ----------
 
