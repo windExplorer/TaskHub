@@ -61,6 +61,10 @@ class Storage:
             c.execute('CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_payloads_created ON task_payloads(created_at)')
+            # 兼容旧库：补充 text_len 列（语音任务文本字数）
+            cols = [r[1] for r in c.execute('PRAGMA table_info(tasks)')]
+            if 'text_len' not in cols:
+                c.execute('ALTER TABLE tasks ADD COLUMN text_len INTEGER DEFAULT 0')
 
     # ---------- 写入 ----------
 
@@ -87,8 +91,8 @@ class Storage:
                     """INSERT OR REPLACE INTO tasks
                        (task_id, task_type, priority, status, status_code, error,
                         created_at, started_at, finished_at, queue_seconds, run_seconds,
-                        resource_weight, estimated_duration)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        resource_weight, estimated_duration, text_len)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         task.task_id,
                         task.task_type,
@@ -103,6 +107,7 @@ class Storage:
                         round(task.run_seconds, 3),
                         task.resource_weight,
                         task.estimated_duration,
+                        getattr(task, 'text_len', 0),
                     ),
                 )
                 pj = self._payload_json(task)

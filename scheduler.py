@@ -45,6 +45,8 @@ class Task:
     started_event: Any = field(default=None, compare=False)
     pending_confirm: bool = field(default=False, compare=False)
     queue_position: int = field(default=0, compare=False)
+    text_len: int = field(default=0, compare=False)
+    # 语音任务文本字数（用于展示）；入队时从 payload 提取。
     # 入队时记录「前方还有几个任务（含进行中）」，供响应头 X-Queue-Position 返回。
     # pending_confirm True 表示 handler 已把请求交给真实后端（如 ComfyUI 已拿到
     # prompt_id），任务保持 running，等待后台 watch 通过 confirm_task() 终结
@@ -82,6 +84,7 @@ class Task:
             'run_seconds': round(self.run_seconds, 2),
             'resource_weight': self.resource_weight,
             'estimated_duration': self.estimated_duration,
+            'text_len': self.text_len,
         }
 
 
@@ -170,6 +173,8 @@ class Scheduler:
         heapq.heappush(self._heap, task)
         self.tasks[task.task_id] = task
         task.queue_position = self.position_of(task)
+        if task.task_type == 'tts':
+            task.text_len = len(str((task.payload or {}).get('tts_text', '')))
         self.total_queued += 1
         self._wakeup.set()
         self._emit_async(task)

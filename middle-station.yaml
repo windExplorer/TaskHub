@@ -5,8 +5,8 @@ server:
   host: 0.0.0.0
   port: 9000
   max_concurrent: 1          # 全局最大并发任务数（收紧避免 TTS/ComfyUI 同时挤爆显存）
-  queue_wait: 100             # 入队等待超时（秒），超时回 429；0 = 不限制（由客户端自行掐超时）
-  infer_timeout: 100          # 单次推理超时（秒），超时回 504；0 = 不限制（由客户端自行掐超时）
+  queue_wait: 120             # 入队等待超时（秒），超时回 429；0 = 不限制（由客户端自行掐超时）
+  infer_timeout: 120          # 单次推理超时（秒），超时回 504；0 = 不限制（由客户端自行掐超时）
   db_path: ./middle-station.db
   log_max_lines: 100
   frontend_dir: ./frontend
