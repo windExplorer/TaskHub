@@ -1,0 +1,30 @@
+# Middle Station 配置
+# 环境变量（MIDDLE_*）优先于本文件
+
+server:
+  host: 0.0.0.0
+  port: 9000
+  max_concurrent: 3          # 全局最大并发任务数
+  queue_wait: 30             # 入队等待超时（秒），超时回 429 让上游退避
+  infer_timeout: 120         # 单次推理超时（秒），超时回 504
+  db_path: ./middle-station.db
+  log_max_lines: 100
+  frontend_dir: ./frontend
+
+tts:
+  base_url: http://127.0.0.1:50002   # 真实 CosyVoice 后端（插件配置指向本中转站）
+  sample_rate: 24000                 # 兜底采样率，启动探测到后端真实值后自动覆盖
+  voices_dir: null                   # 服务端参考音频目录（用于构建 文件名->文本 映射）
+  voices_json: null                  # 文件名 -> prompt_text 映射文件（json）
+  # voices:                          # 内联映射（优先级最高）
+  #   xiaoyu.wav: 你好，我是小宇。
+
+comfyui:
+  base_url: http://127.0.0.1:8188    # 真实 ComfyUI
+  serialize_concurrent: 1            # 同一时刻只放行 1 个 /prompt（单飞）
+  watch_interval: 4                  # 轮询真实 /history 间隔（秒）
+  watch_timeout: 600                 # 槽位跟踪超时（秒）
+
+monitoring:
+  gpu_threshold: 0.8                 # GPU 占用 >80% 时自动降并发
+  interval_seconds: 2                # 采样间隔（秒）

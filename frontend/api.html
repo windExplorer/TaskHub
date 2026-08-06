@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Middle Station · API 文档</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--scroll-track); }
+  ::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 4px; }
+  :root { --accent: #6366f1; }
+  :root[data-theme="dark"] {
+    --bg: #09090b; --bg-card: #18181b; --bg-hover: #27272a;
+    --border: #27272a; --border-soft: #3f3f46;
+    --text: #fafafa; --text-sub: #d4d4d8; --text-mute: #a1a1aa; --text-dim: #71717a;
+    --code-bg: #101012; --chip: #27272a;
+    --scroll-track: #18181b; --scroll-thumb: #3f3f46;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f4f5; --bg-card: #ffffff; --bg-hover: #f4f4f5;
+    --border: #e4e4e7; --border-soft: #d4d4d8;
+    --text: #18181b; --text-sub: #3f3f46; --text-mute: #71717a; --text-dim: #a1a1aa;
+    --code-bg: #fafafa; --chip: #f4f4f5;
+    --scroll-track: #f4f4f5; --scroll-thumb: #d4d4d8;
+  }
+  .bg-base { background-color: var(--bg); }
+  .bg-card { background-color: var(--bg-card); }
+  .bg-hover:hover { background-color: var(--bg-hover); }
+  .border-card { border-color: var(--border); }
+  .text-main { color: var(--text); }
+  .text-sub { color: var(--text-sub); }
+  .text-mute { color: var(--text-mute); }
+  .text-dim { color: var(--text-dim); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  pre.code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font-size: 12px; line-height: 1.7; overflow-x: auto; }
+  .m-GET { color:#34d399; border-color:rgba(52,211,153,.35); background:rgba(52,211,153,.12); }
+  .m-POST { color:#60a5fa; border-color:rgba(96,165,250,.35); background:rgba(96,165,250,.12); }
+  .m-WS { color:#c084fc; border-color:rgba(192,132,252,.35); background:rgba(192,132,252,.12); }
+  a.anchor { scroll-margin-top: 24px; }
+</style>
+</head>
+<body class="bg-base text-sub min-h-screen">
+
+<div class="max-w-7xl mx-auto px-6 py-6">
+
+  <!-- Header -->
+  <header class="flex items-center justify-between mb-8">
+    <div class="flex items-center gap-3">
+      <a href="/ui/" class="w-9 h-9 rounded-xl flex items-center justify-center" style="background:color-mix(in srgb, var(--accent) 15%, transparent); border:1px solid color-mix(in srgb, var(--accent) 30%, transparent)">
+        <svg class="w-5 h-5" style="color:var(--accent)" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 5h16M4 12h16M4 19h10"/></svg>
+      </a>
+      <div>
+        <h1 class="text-lg font-semibold text-main tracking-tight">Middle Station · API 文档</h1>
+        <p class="text-xs text-dim">Base URL：<span class="mono">http://&lt;host&gt;:9000</span></p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2.5">
+      <a href="/ui/" class="text-xs px-3 py-1.5 rounded-full bg-hover border border-card text-mute hover:text-main">← 监控面板</a>
+      <button id="btn-theme" class="w-9 h-9 rounded-full bg-hover border border-card flex items-center justify-center text-mute hover:text-main" title="切换主题">
+        <span id="icon-sun" class="hidden"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path stroke-linecap="round" d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4m11.4-11.4 1.4-1.4"/></svg></span>
+        <span id="icon-moon" class="hidden"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></span>
+      </button>
+    </div>
+  </header>
+
+  <div class="flex flex-col lg:flex-row gap-8">
+    <!-- TOC -->
+    <nav id="toc" class="lg:w-56 shrink-0">
+      <div class="lg:sticky lg:top-6 space-y-1"></div>
+    </nav>
+
+    <!-- Content -->
+    <main id="content" class="flex-1 min-w-0 space-y-10"></main>
+  </div>
+
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+// ---------- 主题（与监控面板共用 ms-theme） ----------
+function getTheme() {
+  const s = localStorage.getItem('ms-theme');
+  if (s) return s;
+  return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+}
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  localStorage.setItem('ms-theme', t);
+  $('icon-sun').classList.toggle('hidden', t !== 'light');
+  $('icon-moon').classList.toggle('hidden', t !== 'dark');
+}
+$('btn-theme').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+applyTheme(getTheme());
+
+const esc = (s) => String(s).replace(/[<>&]/g, (c) => ({ '<':'&lt;', '>':'&gt;', '&':'&amp;' }[c]));
+
+// ---------- 文档数据 ----------
+const GROUPS = [
+  { id: 'overview', name: '通用说明', endpoints: [
+    { method: '', path: '状态码语义', title: '', raw: `
+<h4>状态码语义（严格遵守）</h4>
+<table class="w-full text-sm border-collapse">
+<thead><tr class="text-left text-[11px] uppercase tracking-wider text-dim border-b border-card"><th class="py-2 pr-3">状态码</th><th class="py-2 pr-3">含义</th><th class="py-2">调用方行为</th></tr></thead>
+<tbody class="text-sub">
+<tr class="border-b border-card"><td class="py-2 pr-3 mono">200</td><td class="py-2 pr-3">成功</td><td class="py-2">正常解析</td></tr>
+<tr class="border-b border-card"><td class="py-2 pr-3 mono">400</td><td class="py-2 pr-3">参数错误（缺 tts_text / 缺参考音频 / 非法 JSON）</td><td class="py-2">不重试，直接报错</td></tr>
+<tr class="border-b border-card"><td class="py-2 pr-3 mono">404</td><td class="py-2 pr-3">任务不存在 / 非排队状态</td><td class="py-2">不重试</td></tr>
+<tr class="border-b border-card"><td class="py-2 pr-3 mono">429</td><td class="py-2 pr-3">排队等待超时（队列满）</td><td class="py-2">指数退避重试</td></tr>
+<tr class="border-b border-card"><td class="py-2 pr-3 mono">503</td><td class="py-2 pr-3">模型未加载 / 服务繁忙</td><td class="py-2">退避重试</td></tr>
+<tr class="border-b border-card"><td class="py-2 pr-3 mono">504</td><td class="py-2 pr-3">推理超时</td><td class="py-2">退避重试</td></tr>
+<tr class="border-b border-card"><td class="py-2 pr-3 mono">500</td><td class="py-2 pr-3">内部错误 / 上游失联 / 空音频</td><td class="py-2">不重试，进冷却</td></tr>
+</tbody></table>
+<p class="text-xs text-dim mt-3">上游（真实 CosyVoice / ComfyUI）返回的非 200 状态码会原样透传给调用方。TTS 结果返回<strong>裸 int16 PCM 字节流</strong>（24kHz 单声道、无 WAV 头）；ComfyUI 任务返回 JSON。</p>` },
+    { method: '', path: '数据格式', title: '', raw: `
+<ul class="list-disc list-inside text-sm space-y-1 text-sub">
+<li>TTS 合成结果：<span class="mono text-xs">application/octet-stream</span>，裸 int16 PCM，WAV 头由插件补。</li>
+<li>ComfyUI 任务：<span class="mono text-xs">{ "prompt_id": "32位hex" }</span>。</li>
+<li>时间戳字段：Unix 秒（float）。</li>
+</ul>` },
+  ]},
+  { id: 'tts', name: 'TTS 标准接口（语音插件）', desc: '契约来源 docs/backend-api.md，插件零改动对接。', endpoints: [
+    { method: 'GET', path: '/', title: '健康检查 + 采样率', note: '插件首次合成前必读，用返回的 sample_rate 覆盖本地配置（否则音调会变）。',
+      resp: `{ "status": "ok", "model_loaded": true, "sample_rate": 24000 }` },
+    { method: 'POST', path: '/inference_zero_shot', title: '零样本合成（主路径）',
+      note: 'multipart/form-data。tts_text 必填；prompt_wav 与 prompt_wav_path 二选一。prompt_text 缺省时按文件名从 voices 映射自动回退；含 LLM 污染标记会被净化丢弃。',
+      params: [
+        ['tts_text', '必填', '目标文本（插件已分段，每段一次请求）'],
+        ['prompt_text', '可选', '参考音频对应的纯人声文本'],
+        ['prompt_wav', '二选一', '上传的参考音频文件'],
+        ['prompt_wav_path', '二选一', '参考音频在服务端的文件名/路径（推荐）'],
+      ],
+      curl: `curl -X POST http://127.0.0.1:9000/inference_zero_shot \\
+  -F "tts_text=你好，今天天气不错。" \\
+  -F "prompt_wav_path=xiaoyu.wav"`,
+      resp: '(裸 PCM 字节流 application/octet-stream)',
+      py: `import httpx, time
+
+def synthesize(text, voice="xiaoyu.wav", max_retry=3):
+    for attempt in range(max_retry):
+        r = httpx.post("http://127.0.0.1:9000/inference_zero_shot",
+                       data={"tts_text": text, "prompt_wav_path": voice},
+                       timeout=130)
+        if r.status_code == 200:
+            return r.content
+        if r.status_code in (429, 503, 504):
+            time.sleep(0.5 * 2 ** attempt)
+            continue
+        print("[错误]", r.status_code, r.text)
+        return None`,
+    },
+    { method: 'POST', path: '/inference_instruct2', title: '指令合成（兼容保留）',
+      note: '字段同 zero_shot，另需 instruct_text（如「请用开心的语气说」）。响应格式同 zero_shot。',
+      params: [
+        ['tts_text', '必填', '目标文本'],
+        ['instruct_text', '必填', '语气指令'],
+        ['prompt_wav / prompt_wav_path', '二选一', '参考音频'],
+      ],
+      curl: `curl -X POST http://127.0.0.1:9000/inference_instruct2 \\
+  -F "tts_text=今天太开心了！" \\
+  -F "instruct_text=请用开心的语气说" \\
+  -F "prompt_wav_path=xiaoyu.wav"`,
+      resp: '(裸 PCM 字节流)' },
+    { method: 'GET', path: '/voices', title: '参考音频列表（排错用）',
+      resp: `{ "voices_dir": "D:/CosyVoice/voices",
+  "files": ["xiaoyu.wav", "boss.wav"],
+  "texts": { "xiaoyu.wav": "你好，我是小宇。" } }` },
+  ]},
+  { id: 'comfy', name: 'ComfyUI 标准接口（绘图插件）', desc: '契约来源 docs/comfyui-backend-api.md。/prompt 走单飞调度（同一时刻仅放行 serialize_concurrent 个），其余透传。', endpoints: [
+    { method: 'POST', path: '/prompt', title: '提交绘图任务（核心，单飞）',
+      note: '排队中的请求内部阻塞等待槽位（不返回 429），提交成功后立即返回 prompt_id。校验失败透传真实 ComfyUI 状态码（常见 400）。',
+      body: `{ "prompt": { "4": { "class_type": "CheckpointLoaderSimple", "inputs": {} } },
+  "client_id": "astrbot-comfyui-xxxx" }`,
+      resp: `{ "prompt_id": "e1f2...32位hex" }` },
+    { method: 'POST', path: '/upload/image', title: '上传图生图参考图',
+      note: 'multipart/form-data：image（文件）、type（固定 input）。中转站保证图片落到真实 ComfyUI 的 input 目录。',
+      resp: `{ "name": "photo.png", "subfolder": "", "type": "input" }` },
+    { method: 'GET', path: '/history/{prompt_id}', title: '查询单个任务结果',
+      note: '排队中/尚未提交返回 {}（插件持续轮询不会误判完成）；完成后透传真实历史 JSON（含 outputs.images[]）。' },
+    { method: 'GET', path: '/history', title: '全部历史（透传）' },
+    { method: 'GET', path: '/view', title: '下载输出图片（透传）',
+      note: 'Query：filename、subfolder、type（通常 type=output）。响应为图片二进制。',
+      curl: `curl "http://127.0.0.1:9000/view?filename=00001.png&subfolder=&type=output" -o out.png` },
+  ]},
+  { id: 'monitor', name: '监控与任务管理', endpoints: [
+    { method: 'GET', path: '/health', title: '系统状态',
+      resp: `{ "status": "ok", "gpu_load": 0.11, "model_loaded": true,
+  "queue_length": 2, "running": 1, "max_concurrent": 3,
+  "sample_rate": 24000 }` },
+    { method: 'GET', path: '/monitor', title: '实时资源快照',
+      note: 'effective_concurrent 为 GPU 过载降并发后的有效值；gpu_load > gpu_threshold 时自动降为 max(1, max_concurrent*0.5)。',
+      resp: `{ "cpu_percent": 13.6, "ram_available_gb": 12.02, "ram_used_gb": 19.8,
+  "ram_total_gb": 31.81, "gpu_load": 0.11, "gpu_free_gb": 6.43,
+  "gpu_total_gb": 8.0, "gpu_threshold": 0.8, "ts": 1786033708.8,
+  "queue_length": 0, "running": 0, "max_concurrent": 3,
+  "effective_concurrent": 3 }` },
+    { method: 'GET', path: '/stats?hours=24', title: '历史统计（SQLite）',
+      resp: `{ "window_hours": 24, "total": 40, "done": 35, "failed": 0,
+  "success_rate": 87.5, "by_type": { "tts": 35, "comfyui": 5 },
+  "avg_run_seconds": 0.36 }` },
+    { method: 'GET', path: '/queue?limit=100', title: '队列与任务状态',
+      note: '任务状态：queued / running / done / failed / timeout / cancelled。',
+      resp: `{ "queue_length": 2, "running": 1, "max_concurrent": 3,
+  "effective_concurrent": 3, "gpu_threshold": 0.8, "gpu_load": 0.11,
+  "total_queued": 123, "total_completed": 120,
+  "tasks": [ { "task_id": "tts_xxx", "task_type": "tts", "priority": 0,
+               "status": "running", "status_code": 200, "error": "",
+               "created_at": 1786033708.8, "started_at": 1786033709.0,
+               "finished_at": null, "queue_seconds": 0.2, "run_seconds": 1.5,
+               "resource_weight": 1.0, "estimated_duration": 30.0 } ] }` },
+    { method: 'GET', path: '/tasks?limit=200', title: '任务列表',
+      resp: `{ "tasks": [ /* 同 /queue 的 tasks 元素 */ ] }` },
+    { method: 'POST', path: '/tasks/{task_id}/promote?priority=-1', title: '插队',
+      note: '把排队中任务提到指定优先级（数值越小越优先）。不存在或非排队返回 404。',
+      resp: `{ "ok": true, "task_id": "tts_xxx", "priority": -1 }` },
+    { method: 'POST', path: '/tasks/{task_id}/cancel', title: '取消排队任务',
+      note: '不存在或非排队返回 404。',
+      resp: `{ "ok": true, "task_id": "tts_xxx" }` },
+    { method: 'GET', path: '/config', title: '当前生效配置（只读）',
+      note: '返回 server / tts / comfyui / monitoring 配置摘要与运行时值（含探测后的真实 sample_rate）。修改请编辑 middle-station.yaml 后重启。' },
+  ]},
+  { id: 'ws', name: 'WebSocket 实时推送', endpoints: [
+    { method: 'WS', path: '/ws/monitor', title: '资源监控（每秒一帧）',
+      resp: `{ "cpu_percent": 12.7, "ram_available_gb": 11.88, "gpu_load": 0.15,
+  "gpu_free_gb": 6.43, "gpu_total_gb": 8.0, "gpu_threshold": 0.8,
+  "queue_length": 0, "running": 0, "max_concurrent": 3,
+  "effective_concurrent": 3, "ts": 1786033736.9 }` },
+    { method: 'WS', path: '/ws/tasks', title: '任务事件',
+      note: '连接后先发全量 init，之后状态变更推 task_update，空闲每 15s 发 ping 保活。',
+      resp: `{ "event": "init", "tasks": [ /* 全部任务 */ ] }
+{ "event": "task_update", "task": { /* 任务对象 */ } }
+{ "event": "ping" }` },
+    { method: 'WS', path: '/ws/logs', title: '日志流（增量推送）',
+      resp: `{ "ts": 1786033736.9, "level": "INFO", "message": "task tts_xxx done" }` },
+  ]},
+];
+
+// ---------- 渲染 ----------
+function render() {
+  const toc = $('toc').querySelector('div');
+  const content = $('content');
+  GROUPS.forEach((g, gi) => {
+    const item = document.createElement('a');
+    item.href = `#g${gi}`;
+    item.className = 'block text-xs py-1.5 px-3 rounded-lg text-mute hover:text-main hover:bg-hover';
+    item.textContent = g.name;
+    toc.appendChild(item);
+
+    const section = document.createElement('section');
+    section.id = `g${gi}`;
+    section.className = 'anchor';
+    let html = `<h2 class="text-base font-semibold text-main mb-1">${esc(g.name)}</h2>`;
+    if (g.desc) html += `<p class="text-xs text-dim mb-4">${esc(g.desc)}</p>`;
+    else html += `<div class="mb-4"></div>`;
+
+    g.endpoints.forEach((ep, ei) => {
+      html += `<div class="rounded-2xl bg-card border border-card p-5 mb-4">`;
+      if (ep.method) {
+        html += `<div class="flex flex-wrap items-center gap-2 mb-2">
+          <span class="mono text-[11px] px-2 py-0.5 rounded-md border m-${ep.method}">${ep.method}</span>
+          <code class="mono text-sm text-main">${esc(ep.path)}</code>
+          <span class="text-sm text-sub font-medium">${esc(ep.title)}</span>
+        </div>`;
+      } else {
+        html += `<h4 class="text-sm font-semibold text-main mb-2">${esc(ep.path)}</h4>`;
+      }
+      if (ep.note) html += `<p class="text-xs text-mute mb-3">${esc(ep.note)}</p>`;
+      if (ep.params) {
+        html += `<table class="w-full text-sm mb-3 border-collapse">
+          <thead><tr class="text-left text-[11px] uppercase tracking-wider text-dim border-b border-card">
+            <th class="py-1.5 pr-3">字段</th><th class="py-1.5 pr-3">必填</th><th class="py-1.5">说明</th></tr></thead><tbody class="text-sub">`;
+        ep.params.forEach(([k, req, d]) => {
+          html += `<tr class="border-b border-card"><td class="py-1.5 pr-3 mono text-xs">${esc(k)}</td>
+            <td class="py-1.5 pr-3 text-xs">${esc(req)}</td><td class="py-1.5 text-xs">${esc(d)}</td></tr>`;
+        });
+        html += `</tbody></table>`;
+      }
+      if (ep.raw) html += ep.raw;
+      if (ep.body) html += codeBlock('请求体', ep.body);
+      if (ep.curl) html += codeBlock('curl', ep.curl);
+      if (ep.py) html += codeBlock('Python', ep.py);
+      if (ep.resp) html += codeBlock('响应', ep.resp);
+      html += `</div>`;
+    });
+    section.innerHTML = html;
+    content.appendChild(section);
+  });
+}
+function codeBlock(label, code) {
+  return `<div class="mb-3">
+    <div class="text-[11px] uppercase tracking-wider text-dim mb-1">${label}</div>
+    <pre class="code mono"><code>${esc(code)}</code></pre>
+  </div>`;
+}
+
+render();
+</script>
+</body>
+</html>
