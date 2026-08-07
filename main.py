@@ -36,6 +36,27 @@ from storage import Storage
 logger = logging.getLogger('middle_station.main')
 
 
+class _WsNoiseFilter(logging.Filter):
+    """过滤浏览器断开 WebSocket 引发的无害 asyncio 回调噪音。
+
+    现象：Windows 下客户端（浏览器刷新/关闭）断开 WS 连接时，asyncio 回调
+    _ProactorBasePipeTransport._call_connection_lost 抛 ConnectionResetError
+    (WinError 10054)，被记成 ERROR 刷屏。对功能无影响，直接挡掉。
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if 'Exception in callback' in msg and '_call_connection_lost' in msg:
+            return False
+        return True
+
+
+def _apply_log_filters():
+    if not getattr(_apply_log_filters, '_applied', False):
+        _apply_log_filters._applied = True
+        logging.getLogger('asyncio').addFilter(_WsNoiseFilter())
+
+
 # ============================================================================
 # 全局状态（由 create_app 初始化）
 # ============================================================================
@@ -430,6 +451,8 @@ def _register_routes(app: FastAPI):
 # ============================================================================
 def create_app(config_path: Optional[str] = None) -> FastAPI:
     global cfg, monitor, scheduler, storage, tts, comfy, broadcaster, log_buffer, _app
+
+    _apply_log_filters()
 
     if config_path:
         cfg = Config.load(config_path)
