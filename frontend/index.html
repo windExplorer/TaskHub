@@ -406,6 +406,9 @@ const tasksMap = new Map();
 function taskRow(t) {
   const tr = document.createElement('tr');
   tr.dataset.id = t.task_id;
+  tr.dataset.created = t.created_at || '';
+  tr.dataset.started = t.started_at || '';
+  tr.dataset.status = t.status || '';
   tr.className = 'border-b border-card bg-hover';
   const canAct = t.status === 'queued';
   const tc = TYPE_COLORS[t.task_type] || { fg: 'var(--accent)', bg: 'color-mix(in srgb, var(--accent) 12%, transparent)', bd: 'color-mix(in srgb, var(--accent) 25%, transparent)' };
@@ -414,8 +417,8 @@ function taskRow(t) {
     <td class="px-3 py-2.5"><span class="text-xs px-2 py-0.5 rounded-md" style="background:${tc.bg}; color:${tc.fg}; border:1px solid ${tc.bd}">${TYPE_LABEL[t.task_type] || t.task_type}</span></td>
     <td class="px-3 py-2.5 text-right mono text-xs text-mute">${t.task_type === 'tts' ? (t.text_len || '–') + '字' : '–'}</td>
     <td class="px-3 py-2.5"><span class="st st-${t.status}">${STATUS_LABEL[t.status] || t.status}</span></td>
-    <td class="px-3 py-2.5 text-right mono text-xs text-mute">${fmt(t.queue_seconds)}s</td>
-    <td class="px-3 py-2.5 text-right mono text-xs text-mute">${fmt(t.run_seconds)}s</td>
+    <td class="px-3 py-2.5 text-right mono text-xs text-mute q-sec">${fmt(t.queue_seconds)}s</td>
+    <td class="px-3 py-2.5 text-right mono text-xs text-mute r-sec">${fmt(t.run_seconds)}s</td>
     <td class="px-3 py-2.5 mono text-xs text-mute">${fmtTime(t.created_at)}</td>
     <td class="px-3 py-2.5 mono text-xs text-mute">${fmtTime(t.finished_at)}</td>
     <td class="px-5 py-2.5 text-right">
@@ -456,6 +459,26 @@ function renderTasks() {
   $('task-count').textContent = `共 ${tasksMap.size} 个（显示 ${visible.length}）`;
 }
 const SHOW_OPTIONS = [5, 10, 20, 50, 100];
+// 运行中/排队中任务的耗时每秒本地递增（服务端只在状态变更时推送快照）
+function startTimeTick() {
+  setInterval(() => {
+    const now = Date.now() / 1000;
+    document.querySelectorAll('#tasks-body tr[data-created]').forEach((tr) => {
+      const created = parseFloat(tr.dataset.created) || 0;
+      const started = parseFloat(tr.dataset.started) || 0;
+      const status = tr.dataset.status || '';
+      const q = tr.querySelector('.q-sec');
+      const r = tr.querySelector('.r-sec');
+      if (q) {
+        q.textContent = fmt(started ? Math.max(0, started - created) : Math.max(0, now - created)) + 's';
+      }
+      if (r && (status === 'running' || status === 'waiting')) {
+        r.textContent = fmt(started ? Math.max(0, now - started) : 0) + 's';
+      }
+    });
+  }, 1000);
+}
+
 function initDefaultShow() {
   const btn = $('default-show');
   const menu = $('default-show-menu');
@@ -604,6 +627,7 @@ $('modal-close').onclick = () => $('modal-config').classList.add('hidden');
 $('modal-config').addEventListener('click', (e) => { if (e.target.id === 'modal-config') $('modal-config').classList.add('hidden'); });
 
 initDefaultShow();
+startTimeTick();
 connectMonitor();
 connectTasks();
 connectLogs();

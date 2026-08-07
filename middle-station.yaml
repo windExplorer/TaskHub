@@ -22,8 +22,8 @@ tts:
 comfyui:
   base_url: http://127.0.0.1:8188    # 真实 ComfyUI
   serialize_concurrent: 1            # 同一时刻只放行 1 个 /prompt（单飞）
-  watch_interval: 4                  # 轮询真实 /history 间隔（秒）
-  watch_timeout: 180                 # 出图跟踪超时（秒），卡死快速标失败；0 = 不限时（客户端自行控制）
+  watch_interval: 2                  # 轮询真实 /history 间隔（秒）
+  watch_timeout: 0                 # 出图跟踪超时（秒），卡死快速标失败；0 = 不限时（客户端自行控制）
 
 monitoring:
   gpu_threshold: 0.8                 # GPU 算力占用率 >80% 时自动降并发
