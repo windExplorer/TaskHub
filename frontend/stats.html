@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TaskHub · 统计</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--scroll-track); }
+  ::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 4px; }
+  :root { --accent: #6366f1; }
+  :root[data-theme="dark"] {
+    --bg: #09090b; --bg-card: #18181b; --bg-hover: #27272a;
+    --border: #27272a; --border-soft: #3f3f46;
+    --text: #fafafa; --text-sub: #d4d4d8; --text-mute: #a1a1aa; --text-dim: #71717a;
+    --chip: #27272a;
+    --chart-grid: #27272a; --chart-tick: #71717a;
+    --scroll-track: #18181b; --scroll-thumb: #3f3f46;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f4f5; --bg-card: #ffffff; --bg-hover: #f4f4f5;
+    --border: #e4e4e7; --border-soft: #d4d4d8;
+    --text: #18181b; --text-sub: #3f3f46; --text-mute: #71717a; --text-dim: #a1a1aa;
+    --chip: #f4f4f5;
+    --chart-grid: #e4e4e7; --chart-tick: #a1a1aa;
+    --scroll-track: #f4f4f5; --scroll-thumb: #d4d4d8;
+  }
+  .bg-base { background-color: var(--bg); }
+  .bg-card { background-color: var(--bg-card); }
+  .bg-hover:hover { background-color: var(--bg-hover); }
+  .border-card { border-color: var(--border); }
+  .text-main { color: var(--text); }
+  .text-sub { color: var(--text-sub); }
+  .text-mute { color: var(--text-mute); }
+  .text-dim { color: var(--text-dim); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+  /* 自定义下拉 */
+  .select-wrap { position: relative; display: inline-block; }
+  .select-field {
+    display: inline-flex; align-items: center; gap: 7px;
+    background-color: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-sub);
+    border-radius: 8px;
+    font-size: 12px;
+    padding: 5px 12px;
+    cursor: pointer;
+    outline: none;
+    transition: border-color .15s, background-color .15s;
+  }
+  .select-field:hover { border-color: var(--border-soft); background-color: var(--bg-hover); }
+  .select-field:focus, .select-field.open { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
+  .select-arrow { color: var(--text-dim); transition: transform .15s; }
+  .select-field.open .select-arrow { transform: rotate(180deg); color: var(--accent); }
+  .select-menu {
+    position: absolute; top: calc(100% + 4px); left: 0; z-index: 50;
+    min-width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 4px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.28);
+  }
+  .select-option { padding: 6px 12px; border-radius: 6px; font-size: 12px; color: var(--text-sub); cursor: pointer; white-space: nowrap; transition: background-color .1s; }
+  .select-option:hover { background: var(--bg-hover); color: var(--text-main); }
+  .select-option.selected { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .select-option.selected::after { content: '✓'; margin-left: 8px; }
+</style>
+</head>
+<body class="bg-base text-sub min-h-screen">
+
+<div class="max-w-7xl mx-auto px-6 py-6">
+
+  <!-- Header -->
+  <header class="flex items-center justify-between mb-8">
+    <div class="flex items-center gap-3">
+      <a href="/ui/" class="w-9 h-9 rounded-xl flex items-center justify-center" style="background:color-mix(in srgb, var(--accent) 15%, transparent); border:1px solid color-mix(in srgb, var(--accent) 30%, transparent)">
+        <svg class="w-5 h-5" style="color:var(--accent)" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 5h16M4 12h16M4 19h10"/></svg>
+      </a>
+      <div>
+        <h1 class="text-lg font-semibold text-main tracking-tight">任务统计</h1>
+        <p class="text-xs text-dim">TaskHub · 本地 LLM 调度</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2.5">
+      <span id="range-label" class="text-xs text-dim">近 24 小时</span>
+      <div id="range-wrap"></div>
+      <a href="/ui/tasks.html" class="text-xs px-3 py-1.5 rounded-full bg-hover border border-card text-mute hover:text-main">全部任务</a>
+      <a href="/ui/" class="text-xs px-3 py-1.5 rounded-full bg-hover border border-card text-mute hover:text-main">← 监控面板</a>
+      <button id="btn-theme" class="w-9 h-9 rounded-full bg-hover border border-card flex items-center justify-center text-mute hover:text-main" title="切换主题">
+        <span id="icon-sun" class="hidden"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path stroke-linecap="round" d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4m11.4-11.4 1.4-1.4"/></svg></span>
+        <span id="icon-moon" class="hidden"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Metric cards -->
+  <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4 mb-8">
+    <div class="rounded-2xl bg-card border border-card p-4">
+      <div class="text-xs text-dim mb-1">总任务</div>
+      <div id="m-total" class="text-2xl font-semibold text-main mono">–</div>
+    </div>
+    <div class="rounded-2xl bg-card border border-card p-4">
+      <div class="text-xs text-dim mb-1">完成</div>
+      <div id="m-done" class="text-2xl font-semibold mono" style="color:#34d399">–</div>
+    </div>
+    <div class="rounded-2xl bg-card border border-card p-4">
+      <div class="text-xs text-dim mb-1">失败</div>
+      <div id="m-failed" class="text-2xl font-semibold mono" style="color:#fb7185">–</div>
+    </div>
+    <div class="rounded-2xl bg-card border border-card p-4">
+      <div class="text-xs text-dim mb-1">成功率</div>
+      <div id="m-rate" class="text-2xl font-semibold text-main mono">–</div>
+    </div>
+    <div class="rounded-2xl bg-card border border-card p-4">
+      <div class="text-xs text-dim mb-1">平均耗时</div>
+      <div class="flex items-baseline gap-1"><span id="m-avg" class="text-2xl font-semibold text-main mono">–</span><span class="text-xs text-dim">s</span></div>
+    </div>
+    <div class="rounded-2xl bg-card border border-card p-4">
+      <div class="text-xs text-dim mb-1">类型占比</div>
+      <div id="m-type" class="text-[13px] text-sub leading-6">–</div>
+    </div>
+  </div>
+
+  <!-- Charts row 1: trend (2/3) + status doughnut (1/3) -->
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-8">
+    <div class="lg:col-span-2 rounded-2xl bg-card border border-card p-5">
+      <h2 class="text-sm font-medium text-sub mb-3">任务量趋势</h2>
+      <div class="h-64"><canvas id="chart-trend"></canvas></div>
+    </div>
+    <div class="rounded-2xl bg-card border border-card p-5">
+      <h2 class="text-sm font-medium text-sub mb-3">状态分布</h2>
+      <div class="h-64 flex items-center justify-center"><canvas id="chart-status"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Charts row 2: type doughnut + avg run trend -->
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-8">
+    <div class="rounded-2xl bg-card border border-card p-5">
+      <h2 class="text-sm font-medium text-sub mb-3">类型分布</h2>
+      <div class="h-56 flex items-center justify-center"><canvas id="chart-type"></canvas></div>
+    </div>
+    <div class="lg:col-span-2 rounded-2xl bg-card border border-card p-5">
+      <h2 class="text-sm font-medium text-sub mb-3">平均耗时趋势</h2>
+      <div class="h-56"><canvas id="chart-avg"></canvas></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n, d = 1) => (n === null || n === undefined || isNaN(n)) ? '–' : Number(n).toFixed(d);
+
+// 主题
+function getTheme() {
+  const s = localStorage.getItem('ms-theme');
+  if (s) return s;
+  return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+}
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  localStorage.setItem('ms-theme', t);
+  $('icon-sun').classList.toggle('hidden', t !== 'light');
+  $('icon-moon').classList.toggle('hidden', t !== 'dark');
+  syncCharts();
+}
+$('btn-theme').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+
+// 通用自定义下拉
+function createSelect(wrapEl, opts, initial, onChange) {
+  wrapEl.classList.add('select-wrap');
+  wrapEl.innerHTML = `
+    <button class="select-field" type="button">
+      <span class="sel-label"></span>
+      <svg class="select-arrow" width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <div class="select-menu hidden"></div>`;
+  const btn = wrapEl.querySelector('.select-field');
+  const menu = wrapEl.querySelector('.select-menu');
+  const label = wrapEl.querySelector('.sel-label');
+  let value = initial;
+  function renderMenu() {
+    menu.innerHTML = '';
+    opts.forEach((o) => {
+      const d = document.createElement('div');
+      d.className = 'select-option' + (o.value === value ? ' selected' : '');
+      d.textContent = o.label;
+      d.onclick = () => { setValue(o.value); close(); onChange(o.value); };
+      menu.appendChild(d);
+    });
+  }
+  function setValue(v) {
+    value = v;
+    const cur = opts.find((o) => o.value === v);
+    label.textContent = cur ? cur.label : '';
+    renderMenu();
+  }
+  function close() { menu.classList.add('hidden'); btn.classList.remove('open'); }
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const hidden = menu.classList.contains('hidden');
+    close();
+    if (hidden) { renderMenu(); menu.classList.remove('hidden'); btn.classList.add('open'); }
+  };
+  document.addEventListener('click', (e) => { if (!wrapEl.contains(e.target)) close(); });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  setValue(initial);
+  return { getValue: () => value, setValue };
+}
+const rangeSelect = createSelect($('range-wrap'), [
+  { value: '24', label: '近 24 小时' }, { value: '168', label: '近 7 天' }, { value: '720', label: '近 30 天' },
+], '24', () => load());
+
+// Charts
+let chartTrend = null, chartStatus = null, chartType = null, chartAvg = null;
+try {
+  chartTrend = new Chart($('chart-trend'), {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: '全部', data: [], borderColor: '#38bdf8', tension: .3, pointRadius: 0, borderWidth: 1.5 },
+      { label: '完成', data: [], borderColor: '#34d399', tension: .3, pointRadius: 0, borderWidth: 1.5 },
+      { label: '失败', data: [], borderColor: '#fb7185', tension: .3, pointRadius: 0, borderWidth: 1.5 },
+    ]},
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      scales: { x: { grid: { color: 'rgba(0,0,0,0)' }, ticks: { maxTicksLimit: 8, maxRotation: 0 } }, y: { beginAtZero: true } },
+      plugins: { legend: { labels: { boxWidth: 10, boxHeight: 10 } } },
+    },
+  });
+  chartStatus = new Chart($('chart-status'), {
+    type: 'doughnut',
+    data: { labels: [], datasets: [{ data: [], backgroundColor: [] }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '62%', plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, boxHeight: 10 } } } },
+  });
+  chartType = new Chart($('chart-type'), {
+    type: 'doughnut',
+    data: { labels: [], datasets: [{ data: [], backgroundColor: [] }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '62%', plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, boxHeight: 10 } } } },
+  });
+  chartAvg = new Chart($('chart-avg'), {
+    type: 'line',
+    data: { labels: [], datasets: [{ label: '平均耗时(s)', data: [], borderColor: '#a78bfa', tension: .3, pointRadius: 0, borderWidth: 1.5 }] },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      scales: { x: { grid: { color: 'rgba(0,0,0,0)' }, ticks: { maxTicksLimit: 8, maxRotation: 0 } }, y: { beginAtZero: true } },
+      plugins: { legend: { labels: { boxWidth: 10, boxHeight: 10 } } },
+    },
+  });
+} catch (e) { console.warn('Chart.js 不可用，图表已禁用:', e); }
+
+function chartColors() {
+  const cs = getComputedStyle(document.documentElement);
+  return { grid: cs.getPropertyValue('--chart-grid').trim() || '#27272a', tick: cs.getPropertyValue('--chart-tick').trim() || '#71717a', label: cs.getPropertyValue('--text-mute').trim() || '#a1a1aa' };
+}
+function syncCharts() {
+  if (!chartTrend) return;
+  const c = chartColors();
+  [chartTrend, chartStatus, chartType, chartAvg].forEach((ch) => {
+    if (!ch) return;
+    if (ch.options.scales) { ch.options.scales.x.ticks.color = c.tick; ch.options.scales.y.ticks.color = c.tick; ch.options.scales.y.grid.color = c.grid; }
+    if (ch.options.plugins.legend) ch.options.plugins.legend.labels.color = c.label;
+  });
+  [chartTrend, chartStatus, chartType, chartAvg].forEach((ch) => { if (ch) ch.update('none'); });
+}
+applyTheme(getTheme());
+
+const STATUS_COLORS = {
+  done: '#34d399', failed: '#fb7185', timeout: '#fbbf24', cancelled: '#a1a1aa',
+  running: '#38bdf8', waiting: '#fbbf24', queued: '#71717a',
+};
+const STATUS_LABEL = { done: '完成', failed: '失败', timeout: '超时', cancelled: '已取消', running: '运行中', waiting: '等待中', queued: '排队中' };
+const TYPE_LABEL = { tts: '语音', comfyui: '绘图' };
+const TYPE_COLORS = { tts: '#0ea5e9', comfyui: '#8b5cf6' };
+
+function fmtAxis(ts, bucket) {
+  const d = new Date(ts * 1000);
+  const hm = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  if (bucket === 'day') return `${d.getMonth()+1}/${d.getDate()}`;
+  return hm;
+}
+
+async function load() {
+  const hours = parseInt(rangeSelect.getValue(), 10) || 24;
+  $('range-label').textContent = rangeSelect.getValue() === '24' ? '近 24 小时' : (rangeSelect.getValue() === '168' ? '近 7 天' : '近 30 天');
+  try {
+    const r = await fetch(`/stats/detail?hours=${hours}`);
+    const d = await r.json();
+    const s = d.summary || {};
+    $('m-total').textContent = s.total ?? '–';
+    $('m-done').textContent = s.done ?? '–';
+    $('m-failed').textContent = s.failed ?? '–';
+    $('m-rate').textContent = fmt(s.success_rate, 0) + '%';
+    $('m-avg').textContent = fmt(s.avg_run_seconds);
+    const bt = d.by_type || {};
+    const typeParts = Object.entries(bt).map(([k, v]) => `${TYPE_LABEL[k] || k} <span class="mono text-mute">${v}</span>`).join(' · ');
+    $('m-type').innerHTML = typeParts || '–';
+
+    if (chartTrend) {
+      chartTrend.data.labels = d.series.map((p) => fmtAxis(p.ts, d.bucket));
+      chartTrend.data.datasets[0].data = d.series.map((p) => p.total);
+      chartTrend.data.datasets[1].data = d.series.map((p) => p.done);
+      chartTrend.data.datasets[2].data = d.series.map((p) => p.failed);
+      chartTrend.update('none');
+    }
+    if (chartStatus) {
+      const st = Object.entries(d.by_status || {}).filter(([, v]) => v > 0);
+      chartStatus.data.labels = st.map(([k]) => STATUS_LABEL[k] || k);
+      chartStatus.data.datasets[0].data = st.map(([, v]) => v);
+      chartStatus.data.datasets[0].backgroundColor = st.map(([k]) => STATUS_COLORS[k] || '#71717a');
+      chartStatus.update('none');
+    }
+    if (chartType) {
+      const ty = Object.entries(d.by_type || {}).filter(([, v]) => v > 0);
+      chartType.data.labels = ty.map(([k]) => TYPE_LABEL[k] || k);
+      chartType.data.datasets[0].data = ty.map(([, v]) => v);
+      chartType.data.datasets[0].backgroundColor = ty.map(([k]) => TYPE_COLORS[k] || '#71717a');
+      chartType.update('none');
+    }
+    if (chartAvg) {
+      chartAvg.data.labels = d.series.map((p) => fmtAxis(p.ts, d.bucket));
+      chartAvg.data.datasets[0].data = d.series.map((p) => p.avg_run);
+      chartAvg.update('none');
+    }
+  } catch (e) {
+    console.warn('加载统计失败:', e);
+  }
+}
+
+load();
+</script>
+</body>
+</html>

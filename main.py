@@ -238,6 +238,11 @@ def _register_routes(app: FastAPI):
     async def stats_api(hours: int = 24):
         return await storage.stats(hours=hours)
 
+    @app.get('/stats/detail')
+    async def stats_detail_api(hours: int = 24):
+        """统计详情（汇总 + 类型/状态分布 + 时间序列），供统计页图表使用。"""
+        return await storage.stats_detail(hours=hours)
+
     @app.get('/config')
     async def config_api():
         """当前生效配置（只读；修改请编辑 middle-station.yaml 后重启）。"""

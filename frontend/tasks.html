@@ -56,11 +56,64 @@
   .st-failed { background: var(--st-failed-bg); color: var(--st-failed-fg); border-color: var(--st-failed-bd); }
   .st-timeout { background: var(--st-timeout-bg); color: var(--st-timeout-fg); border-color: var(--st-timeout-bd); }
   .st-cancelled { background: var(--st-cancel-bg); color: var(--st-cancel-fg); border-color: var(--st-cancel-bd); }
-  select, input { background: var(--input-bg); border: 1px solid var(--border); color: var(--text-sub); font-size: 12px; border-radius: 8px; padding: 5px 10px; outline: none; }
-  select:focus, input:focus { border-color: var(--accent); }
-  .btn { font-size: 12px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--border); color: var(--text-mute); background: var(--chip); }
-  .btn:hover { color: var(--text-main); background: var(--bg-hover); }
+  /* 输入框 */
+  .input-field {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-sub);
+    font-size: 12px;
+    border-radius: 8px;
+    padding: 6px 12px;
+    outline: none;
+    width: 100%;
+    transition: border-color .15s, box-shadow .15s, background-color .15s;
+  }
+  .input-field:hover { border-color: var(--border-soft); background-color: var(--bg-hover); }
+  .input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
+  .input-field::placeholder { color: var(--text-dim); }
+
+  /* 按钮 */
+  .btn { font-size: 12px; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border); color: var(--text-mute); background: var(--bg-card); cursor: pointer; transition: all .15s; }
+  .btn:hover { color: var(--text-main); background: var(--bg-hover); border-color: var(--border-soft); }
   .btn-primary { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+  .btn-primary:hover { background: color-mix(in srgb, var(--accent) 25%, transparent); color: var(--accent); }
+
+  /* 自定义下拉（shadcn Select 风格） */
+  .select-wrap { position: relative; display: inline-block; }
+  .select-field {
+    display: inline-flex; align-items: center; gap: 7px;
+    background-color: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-sub);
+    border-radius: 8px;
+    font-size: 12px;
+    padding: 6px 12px;
+    cursor: pointer;
+    outline: none;
+    transition: border-color .15s, background-color .15s;
+  }
+  .select-field:hover { border-color: var(--border-soft); background-color: var(--bg-hover); }
+  .select-field:focus, .select-field.open { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
+  .select-arrow { color: var(--text-dim); transition: transform .15s; }
+  .select-field.open .select-arrow { transform: rotate(180deg); color: var(--accent); }
+  .select-menu {
+    position: absolute; top: calc(100% + 4px); left: 0; z-index: 50;
+    min-width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 4px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.28), 0 0 0 1px color-mix(in srgb, var(--border) 60%, transparent);
+  }
+  .select-option {
+    padding: 6px 12px; border-radius: 6px;
+    font-size: 12px; color: var(--text-sub);
+    cursor: pointer; white-space: nowrap;
+    transition: background-color .1s;
+  }
+  .select-option:hover { background: var(--bg-hover); color: var(--text-main); }
+  .select-option.selected { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .select-option.selected::after { content: '✓'; margin-left: 8px; }
 </style>
 </head>
 <body class="bg-base text-sub min-h-screen">
@@ -79,6 +132,7 @@
       </div>
     </div>
     <div class="flex items-center gap-2.5">
+      <a href="/ui/stats.html" class="text-xs px-3 py-1.5 rounded-full bg-hover border border-card text-mute hover:text-main">统计</a>
       <a href="/ui/" class="text-xs px-3 py-1.5 rounded-full bg-hover border border-card text-mute hover:text-main">← 监控面板</a>
       <button id="btn-theme" class="w-9 h-9 rounded-full bg-hover border border-card flex items-center justify-center text-mute hover:text-main" title="切换主题">
         <span id="icon-sun" class="hidden"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path stroke-linecap="round" d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4m11.4-11.4 1.4-1.4"/></svg></span>
@@ -92,28 +146,15 @@
     <div class="flex flex-wrap items-end gap-3">
       <div>
         <div class="text-[11px] text-dim mb-1">任务类型</div>
-        <select id="f-type">
-          <option value="">全部</option>
-          <option value="tts">语音</option>
-          <option value="comfyui">绘图</option>
-        </select>
+        <div id="f-type-wrap"></div>
       </div>
       <div>
         <div class="text-[11px] text-dim mb-1">状态</div>
-        <select id="f-status">
-          <option value="">全部</option>
-          <option value="queued">排队中</option>
-          <option value="waiting">等待中</option>
-          <option value="running">运行中</option>
-          <option value="done">完成</option>
-          <option value="failed">失败</option>
-          <option value="timeout">超时</option>
-          <option value="cancelled">已取消</option>
-        </select>
+        <div id="f-status-wrap"></div>
       </div>
       <div class="flex-1 min-w-[200px]">
         <div class="text-[11px] text-dim mb-1">关键词（任务ID / 错误信息）</div>
-        <input id="f-keyword" type="text" placeholder="搜索…" class="w-full">
+        <input id="f-keyword" type="text" placeholder="搜索…" class="input-field">
       </div>
       <div>
         <div class="text-[11px] text-dim mb-1">&nbsp;</div>
@@ -131,10 +172,7 @@
     <div class="flex items-center justify-between px-5 py-3 border-b border-card">
       <span id="total-label" class="text-xs text-dim">共 0 条</span>
       <div class="flex items-center gap-2 text-xs text-mute">
-        每页
-        <select id="f-size" class="!w-auto">
-          <option>10</option><option selected>20</option><option>50</option><option>100</option>
-        </select>
+        每页 <div id="f-size-wrap"></div>
       </div>
     </div>
     <div class="overflow-x-auto">
@@ -195,6 +233,56 @@ applyTheme(getTheme());
 
 const state = { page: 1, pageSize: 20, taskType: '', status: '', keyword: '' };
 
+// ---------- 通用自定义下拉（shadcn Select 风格） ----------
+function createSelect(wrapEl, opts, initial, onChange) {
+  wrapEl.classList.add('select-wrap');
+  wrapEl.innerHTML = `
+    <button class="select-field" type="button">
+      <span class="sel-label"></span>
+      <svg class="select-arrow" width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <div class="select-menu hidden"></div>`;
+  const btn = wrapEl.querySelector('.select-field');
+  const menu = wrapEl.querySelector('.select-menu');
+  const label = wrapEl.querySelector('.sel-label');
+  let value = initial;
+  function renderMenu() {
+    menu.innerHTML = '';
+    opts.forEach((o) => {
+      const d = document.createElement('div');
+      d.className = 'select-option' + (o.value === value ? ' selected' : '');
+      d.textContent = o.label;
+      d.onclick = () => { setValue(o.value); close(); onChange(o.value); };
+      menu.appendChild(d);
+    });
+  }
+  function setValue(v) {
+    value = v;
+    const cur = opts.find((o) => o.value === v);
+    label.textContent = cur ? cur.label : '';
+    renderMenu();
+  }
+  function close() { menu.classList.add('hidden'); btn.classList.remove('open'); }
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const hidden = menu.classList.contains('hidden');
+    close();
+    if (hidden) { renderMenu(); menu.classList.remove('hidden'); btn.classList.add('open'); }
+  };
+  document.addEventListener('click', (e) => { if (!wrapEl.contains(e.target)) close(); });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  setValue(initial);
+  return { getValue: () => value, setValue };
+}
+const typeSelect = createSelect($('f-type-wrap'), [
+  { value: '', label: '全部' }, { value: 'tts', label: '语音' }, { value: 'comfyui', label: '绘图' },
+], '', () => {});
+const statusSelect = createSelect($('f-status-wrap'), [
+  { value: '', label: '全部' }, { value: 'queued', label: '排队中' }, { value: 'waiting', label: '等待中' },
+  { value: 'running', label: '运行中' }, { value: 'done', label: '完成' }, { value: 'failed', label: '失败' },
+  { value: 'timeout', label: '超时' }, { value: 'cancelled', label: '已取消' },
+], '', () => {});
+
 function fmtTime(ts) {
   if (!ts) return '–';
   const d = new Date(ts * 1000);
@@ -243,17 +331,17 @@ async function load() {
 
 $('btn-query').onclick = () => {
   state.page = 1;
-  state.taskType = $('f-type').value;
-  state.status = $('f-status').value;
+  state.taskType = typeSelect.getValue();
+  state.status = statusSelect.getValue();
   state.keyword = $('f-keyword').value.trim();
   load();
 };
 $('btn-reset').onclick = () => {
-  $('f-type').value = ''; $('f-status').value = ''; $('f-keyword').value = '';
+  typeSelect.setValue(''); statusSelect.setValue(''); $('f-keyword').value = '';
   state.page = 1; state.taskType = ''; state.status = ''; state.keyword = '';
   load();
 };
-$('f-size').onchange = () => { state.pageSize = parseInt($('f-size').value, 10); state.page = 1; load(); };
+const sizeSelect = createSelect($('f-size-wrap'), [10, 20, 50, 100].map((v) => ({ value: String(v), label: v + ' 条' })), '20', (v) => { state.pageSize = parseInt(v, 10) || 20; state.page = 1; load(); });
 $('btn-prev').onclick = () => { if (state.page > 1) { state.page--; load(); } };
 $('btn-next').onclick = () => { state.page++; load(); };
 $('f-keyword').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btn-query').onclick(); });

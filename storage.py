@@ -200,6 +200,69 @@ class Storage:
             return {'total': 0, 'page': page, 'page_size': page_size,
                     'pages': 1, 'tasks': []}
 
+    async def stats_detail(self, hours: int = 24) -> Dict:
+        """统计详情：汇总 + 类型/状态分布 + 时间序列（统计页图表用）。"""
+        return await asyncio.to_thread(self._stats_detail_sync, hours)
+
+    def _stats_detail_sync(self, hours: int = 24) -> Dict:
+        hours = max(1, min(24 * 90, int(hours)))
+        cutoff = time.time() - hours * 3600
+        bucket_s = 3600 if hours <= 48 else 86400   # 短窗口按小时桶，长窗口按天桶
+        try:
+            with self._conn() as c:
+                total = c.execute(
+                    'SELECT COUNT(*) FROM tasks WHERE created_at >= ?', (cutoff,)).fetchone()[0]
+                done = c.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status='done' AND created_at >= ?",
+                    (cutoff,)).fetchone()[0]
+                failed = c.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status IN ('failed','timeout') AND created_at >= ?",
+                    (cutoff,)).fetchone()[0]
+                avg_run = c.execute(
+                    "SELECT AVG(run_seconds) FROM tasks WHERE status='done' AND created_at >= ?",
+                    (cutoff,)).fetchone()[0] or 0
+                by_type = {
+                    r[0]: r[1] for r in c.execute(
+                        'SELECT task_type, COUNT(*) FROM tasks WHERE created_at >= ? GROUP BY task_type',
+                        (cutoff,))
+                }
+                by_status = {
+                    r[0]: r[1] for r in c.execute(
+                        'SELECT status, COUNT(*) FROM tasks WHERE created_at >= ? GROUP BY status',
+                        (cutoff,))
+                }
+                series = [{
+                    'ts': r[0],
+                    'total': r[1],
+                    'done': r[2],
+                    'failed': r[3],
+                    'avg_run': round(r[4] or 0, 2),
+                } for r in c.execute(
+                    f"""SELECT CAST(created_at / {bucket_s} AS INTEGER) * {bucket_s} AS ts,
+                               COUNT(*) AS total,
+                               SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) AS done,
+                               SUM(CASE WHEN status IN ('failed','timeout') THEN 1 ELSE 0 END) AS failed,
+                               AVG(CASE WHEN status='done' THEN run_seconds END) AS avg_run
+                        FROM tasks WHERE created_at >= ? GROUP BY ts ORDER BY ts""",
+                    (cutoff,))
+                ]
+                return {
+                    'hours': hours,
+                    'bucket': 'hour' if bucket_s == 3600 else 'day',
+                    'summary': {
+                        'total': total, 'done': done, 'failed': failed,
+                        'success_rate': round(done / total * 100, 1) if total else 0.0,
+                        'avg_run_seconds': round(avg_run, 2),
+                    },
+                    'by_type': by_type,
+                    'by_status': by_status,
+                    'series': series,
+                }
+        except Exception as e:  # noqa: BLE001
+            logger.error('stats_detail failed: %s', e)
+            return {'hours': hours, 'bucket': 'hour', 'summary': {},
+                    'by_type': {}, 'by_status': {}, 'series': []}
+
     async def list_tasks(self, limit: int = 200) -> List[Dict]:
         return await asyncio.to_thread(self._list_sync, limit)
 
