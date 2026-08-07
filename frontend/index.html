@@ -384,16 +384,29 @@ function taskRow(t) {
   if (cx) cx.onclick = () => fetch(`/tasks/${t.task_id}/cancel`, { method: 'POST' });
   return tr;
 }
+let showAllTasks = false;
+const DEFAULT_SHOW = 20;   // 默认展示最新 N 条，超出折叠
 function renderTasks() {
   const body = $('tasks-body');
   body.innerHTML = '';
-  const sorted = [...tasksMap.values()].sort((a, b) => b.created_at - a.created_at).slice(0, 100);
-  if (!sorted.length) {
+  const sorted = [...tasksMap.values()].sort((a, b) => b.created_at - a.created_at);
+  const visible = showAllTasks ? sorted.slice(0, 100) : sorted.slice(0, DEFAULT_SHOW);
+  if (!visible.length) {
     body.innerHTML = '<tr><td colspan="9" class="px-5 py-8 text-center text-dim">暂无任务</td></tr>';
   } else {
-    sorted.forEach((t) => body.appendChild(taskRow(t)));
+    visible.forEach((t) => body.appendChild(taskRow(t)));
+    if (sorted.length > DEFAULT_SHOW) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td colspan="9" class="px-5 py-2.5 text-center">
+        <button class="toggle-btn text-xs px-3 py-1 rounded-full bg-hover border border-card text-mute hover:text-main">
+          ${showAllTasks ? `收起（显示最新 ${DEFAULT_SHOW} 条）` : `展开全部（共 ${sorted.length} 条）`}
+        </button>
+      </td>`;
+      tr.querySelector('.toggle-btn').onclick = () => { showAllTasks = !showAllTasks; renderTasks(); };
+      body.appendChild(tr);
+    }
   }
-  $('task-count').textContent = `共 ${tasksMap.size} 个（显示 ${sorted.length}）`;
+  $('task-count').textContent = `共 ${tasksMap.size} 个（显示 ${visible.length}）`;
 }
 function connectTasks() {
   const ws = new WebSocket(`ws://${location.host}/ws/tasks`);
