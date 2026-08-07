@@ -1,4 +1,4 @@
-"""Middle Station —— AstrBot 插件任务调度中转站。
+"""TaskHub —— 本地 LLM 调度中转站。
 
 接收 AstrBot 插件（CosyVoice3 TTS + ComfyUI 绘图）的标准接口请求，
 进行资源监控、优先级排队、GPU 感知并发调度，并透传 / 调度到真实后端。
@@ -137,14 +137,14 @@ async def lifespan(app: FastAPI):
     await monitor.start()
     scheduler.start()
     await tts.start()
-    logger.info('middle station up: http://%s:%s (tts=%s, comfyui=%s)',
+    logger.info('TaskHub up: http://%s:%s (tts=%s, comfyui=%s)',
                 cfg.server.host, cfg.server.port, cfg.tts.base_url, cfg.comfyui.base_url)
     yield
     await tts.stop()
     await monitor.stop()
     await scheduler.stop()
     await comfy.close()
-    logger.info('middle station stopped')
+    logger.info('TaskHub stopped')
 
 
 async def _on_task_update(task: Task):
@@ -478,7 +478,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     log_buffer.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
     logging.getLogger().addHandler(log_buffer)
 
-    app = FastAPI(title='Middle Station', version='1.2.0', lifespan=lifespan)
+    app = FastAPI(title='TaskHub', description='本地 LLM 调度', version='1.2.0', lifespan=lifespan)
     _register_routes(app)
     scheduler.on_task_update(_on_task_update)
     _app = app
@@ -503,7 +503,7 @@ def start(host, port, config, reload):
     app = create_app(config)
     h = host or cfg.server.host
     p = port or cfg.server.port
-    logger.info('starting middle station on %s:%s', h, p)
+    logger.info('starting TaskHub on %s:%s', h, p)
     uvicorn.run(app, host=h, port=p, reload=reload, access_log=False, log_level='info')
 
 

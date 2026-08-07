@@ -1,4 +1,4 @@
-# Middle Station 对接说明（AstrBot 插件方）
+# TaskHub 对接说明（AstrBot 插件方）
 
 > 面向：AstrBot 插件（CosyVoice 语音 / ComfyUI 绘图）的开发者或维护者。
 > 目的：说明插件如何接入任务调度中转站，以及可选的「排队位置感知」扩展。
@@ -11,7 +11,7 @@
 一个本地任务调度服务，位于 **AstrBot 插件与真实后端（CosyVoice / ComfyUI）之间**：
 
 ```
-AstrBot 插件 ──标准接口──> Middle Station（队列/调度/GPU·显存感知并发）
+AstrBot 插件 ──标准接口──> TaskHub（队列/调度/GPU·显存感知并发）
                                 ├──> CosyVoice 后端
                                 └──> ComfyUI 后端
 ```

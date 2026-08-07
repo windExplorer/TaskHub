@@ -1,10 +1,10 @@
 @echo off
 setlocal
-title Middle Station
+title TaskHub
 cd /d "%~dp0"
 
 echo ============================================
-echo   Middle Station  -  one-click launcher
+echo   TaskHub  -  one-click launcher
 echo ============================================
 
 rem ---------- 1. dependency sync ----------
@@ -31,7 +31,7 @@ if defined FOUND (
 )
 
 rem ---------- 3. start service ----------
-echo [3/3] starting Middle Station at http://127.0.0.1:9000  (WebUI: /ui)
+echo [3/3] starting TaskHub at http://127.0.0.1:9000  (WebUI: /ui)
 echo   press Ctrl+C to stop, or just close this window.
 echo.
 uv run python main.py start
