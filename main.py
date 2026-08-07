@@ -339,20 +339,22 @@ def _register_routes(app: FastAPI):
             raise HTTPException(status_code=400, detail='invalid json body')
         if not isinstance(body, dict) or 'prompt' not in body:
             raise HTTPException(status_code=400, detail='body must contain "prompt"')
+        # 中转站立即返回一个虚拟 prompt_id（不等槽位、不阻塞、不因排队超时取消），
+        # 任务进入队列后由 ComfyAdapter 映射到真实 prompt_id，插件照常轮询 /history。
+        virtual_pid = uuid.uuid4().hex
+        comfy.states[virtual_pid] = 'queued'
         task = Task(
             priority=0, created_at=time.time(), task_id=_new_id('comfy'),
-            task_type='comfyui', payload=body, handler=comfy.submit_prompt,
+            task_type='comfyui',
+            payload={**body, '_virtual_pid': virtual_pid},
+            handler=comfy.submit_prompt,
             estimated_duration=120.0, resource_weight=2.0,
+            handler_timeout=0,   # 等单飞槽位 + 提交不限时，排队不因超时失败/取消
         )
-        # 插件不识别排队响应：内部阻塞等待槽位，绝不回 429
         scheduler.add_task(task)
-        result, code, err = await scheduler.submit(
-            task, queue_wait=None, infer_timeout=cfg.server.infer_timeout)
-        if code == 200:
-            resp = JSONResponse(result)
-            resp.headers['X-Queue-Position'] = str(task.queue_position)
-            return resp
-        raise HTTPException(status_code=code, detail=err or f'http {code}')
+        resp = JSONResponse({'prompt_id': virtual_pid})
+        resp.headers['X-Queue-Position'] = str(task.queue_position)
+        return resp
 
     @app.post('/upload/image')
     async def comfy_upload(request: Request):

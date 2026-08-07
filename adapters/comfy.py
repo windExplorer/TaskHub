@@ -11,6 +11,7 @@
   出图完成才由 scheduler.confirm_task() 置为 done；超时/执行失败置 failed。
 """
 import asyncio
+import json
 import logging
 import time
 from typing import Dict, Optional, Tuple
@@ -29,9 +30,10 @@ class ComfyAdapter:
         self.watch_timeout = cfg.comfyui.watch_timeout
         self._scheduler = scheduler
         self.sem = asyncio.Semaphore(cfg.comfyui.serialize_concurrent)
-        self.states: Dict[str, str] = {}      # prompt_id -> queued/running/done/failed
-        self.task_ids: Dict[str, str] = {}    # prompt_id -> task_id
-        self._watchers: Dict[str, Task] = {}  # prompt_id -> task（用于回写状态）
+        self.states: Dict[str, str] = {}      # 虚拟prompt_id -> queued/running/done/failed
+        self.task_ids: Dict[str, str] = {}    # 虚拟prompt_id -> task_id
+        self.pid_map: Dict[str, str] = {}     # 虚拟prompt_id -> 真实ComfyUI prompt_id
+        self._watchers: Dict[str, Task] = {}  # 虚拟prompt_id -> task（用于回写状态）
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=10.0, read=cfg.server.infer_timeout + 30.0,
@@ -52,6 +54,7 @@ class ComfyAdapter:
           保证同一时刻真实 ComfyUI 只跑一个任务。
         """
         payload = task.payload
+        virtual_pid = payload.get('_virtual_pid') or task.task_id
         # 等待单飞槽位：标记「等待中」，让任务列表清晰展示排队（而非显示成运行中）
         if self._scheduler is not None:
             self._scheduler.set_task_status(task, 'waiting')
@@ -75,18 +78,20 @@ class ComfyAdapter:
         except ValueError as e:
             self.sem.release()
             raise BackendError(500, f'bad upstream json: {e}') from e
-        pid = data.get('prompt_id')
-        if not pid:
+        real_pid = data.get('prompt_id')
+        if not real_pid:
             self.sem.release()
             raise BackendError(500, 'upstream returned no prompt_id')
-        self.states[pid] = 'running'
-        self.task_ids[pid] = task.task_id
-        self._watchers[pid] = task
+        # 建立 虚拟pid -> 真实pid 映射：插件用虚拟 pid 轮询 /history，中转站负责透传
+        self.states[virtual_pid] = 'running'
+        self.task_ids[virtual_pid] = task.task_id
+        self._watchers[virtual_pid] = task
+        self.pid_map[virtual_pid] = real_pid
         # 提交成功：任务保持 running（pending_confirm），
         # 等待 _watch 轮询真实出图结果后由 confirm_task() 终结；槽位由 _watch 释放。
         task.pending_confirm = True
-        asyncio.create_task(self._watch(pid, self.sem))
-        return data   # {'prompt_id': pid}，立即返回给插件
+        asyncio.create_task(self._watch(virtual_pid, real_pid, self.sem))
+        return data   # 真实 pid 仅在内部使用，对外返回虚拟 pid
 
     def _finish(self, prompt_id: str, status: str, code: int, error: str = ''):
         """出图终结：更新本地状态表，并把结果回写到调度器任务。"""
@@ -95,8 +100,9 @@ class ComfyAdapter:
         if task is not None and self._scheduler is not None:
             self._scheduler.confirm_task(task, status, code, error)
 
-    async def _watch(self, prompt_id: str, sem: Optional[asyncio.Semaphore] = None):
-        """轮询真实 /history 直至该 prompt_id 出图；超时/异常标记 failed。
+    async def _watch(self, virtual_pid: str, real_pid: str,
+                     sem: Optional[asyncio.Semaphore] = None):
+        """轮询真实 /history 直至 real_pid 出图；结果回写到虚拟 pid；超时/异常标记 failed。
 
         sem 在任务终结时释放（单飞槽位覆盖完整生命周期）。
         """
@@ -105,11 +111,11 @@ class ComfyAdapter:
             while True:
                 # watch_timeout 为 0/负数 = 不限时（客户端自行控制超时）
                 if self.watch_timeout and self.watch_timeout > 0 and time.time() >= deadline:
-                    self._finish(prompt_id, 'failed', 500, 'draw timeout, no result')
+                    self._finish(virtual_pid, 'failed', 500, 'draw timeout, no result')
                     return
                 await asyncio.sleep(self.watch_interval)
                 try:
-                    r = await self._client.get(f'{self.base_url}/history/{prompt_id}')
+                    r = await self._client.get(f'{self.base_url}/history/{real_pid}')
                 except httpx.RequestError:
                     continue
                 if r.status_code != 200:
@@ -118,14 +124,14 @@ class ComfyAdapter:
                     hist = r.json()
                 except ValueError:
                     continue
-                entry = hist.get(prompt_id) if isinstance(hist, dict) else None
+                entry = hist.get(real_pid) if isinstance(hist, dict) else None
                 if entry is not None:
                     status_str = (entry.get('status') or {}).get('status_str', 'success')
                     if status_str == 'error':
-                        logger.error('comfyui task %s execution error', prompt_id)
-                        self._finish(prompt_id, 'failed', 500, 'comfyui execution error')
+                        logger.error('comfyui task %s execution error', real_pid)
+                        self._finish(virtual_pid, 'failed', 500, 'comfyui execution error')
                     else:
-                        self._finish(prompt_id, 'done', 200, '')
+                        self._finish(virtual_pid, 'done', 200, '')
                     return
         except Exception as e:  # noqa: BLE001
             logger.exception('comfyui watch failed for %s', prompt_id)
@@ -137,9 +143,25 @@ class ComfyAdapter:
     # ---------- 只读 / 上传透传 ----------
 
     async def history_one(self, prompt_id: str) -> Tuple[int, bytes, Optional[str]]:
-        """GET /history/{prompt_id}。排队中未提交 -> 返回空 {}。"""
+        """GET /history/{prompt_id}。
+
+        支持中转站生成的虚拟 pid：排队中（未提交）返回空 {}；已提交则映射到真实
+        pid 透传，并把结果键替换回虚拟 pid（插件用 prompt_id in hist 判断完成）。
+        非虚拟 pid（如真实 ComfyUI 直连场景）直接透传真实后端。
+        """
         if self.states.get(prompt_id) == 'queued':
             return 200, b'{}', 'application/json'
+        real = self.pid_map.get(prompt_id)
+        if real:
+            status, content, ctype = await self._forward('GET', f'/history/{real}')
+            if status == 200:
+                try:
+                    hist = json.loads(content)
+                    if real in hist:
+                        content = json.dumps({prompt_id: hist[real]}).encode()
+                except Exception:  # noqa: BLE001
+                    pass
+            return status, content, ctype
         return await self._forward('GET', f'/history/{prompt_id}')
 
     async def history_all(self, query: str = '') -> Tuple[int, bytes, Optional[str]]:

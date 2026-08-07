@@ -34,6 +34,9 @@ class Task:
     resource_weight: float = field(default=1.0, compare=False)
     estimated_duration: float = field(default=60.0, compare=False)
     handler: Optional[Callable] = field(default=None, compare=False)
+    handler_timeout: Optional[float] = field(default=None, compare=False)
+    # 该任务 handler 的执行超时（秒）；None = 用调度器 infer_timeout，0/负 = 不限时。
+    # ComfyUI 任务用它设 0：等单飞槽位 + 提交不限时，排队不因超时被取消/失败。
 
     status: str = field(default='queued', compare=False)
     status_code: int = field(default=200, compare=False)
@@ -328,8 +331,9 @@ class Scheduler:
         try:
             if task.handler is None:
                 raise RuntimeError('task has no handler')
-            # infer_timeout 为 0/负数 = 不限制（无限等待，客户端自行掐超时）
-            it = self.infer_timeout if (self.infer_timeout and self.infer_timeout > 0) else None
+            # 超时策略：task.handler_timeout 优先，其次全局 infer_timeout；0/负 = 不限时
+            it = task.handler_timeout if task.handler_timeout is not None else self.infer_timeout
+            it = it if (it and it > 0) else None
             result = await asyncio.wait_for(
                 asyncio.shield(task.handler(task)), timeout=it
             )
