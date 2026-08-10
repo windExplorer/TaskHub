@@ -447,6 +447,18 @@ def _register_routes(app: FastAPI):
     # ---- WebUI 静态页 ----
     import os
     if os.path.isdir(cfg.server.frontend_dir):
+        # 关闭前端静态文件缓存，避免修改后浏览器仍用旧版（首屏空白等问题的常见元凶）
+        @app.middleware('http')
+        async def _no_cache_ui(request, call_next):
+            resp = await call_next(request)
+            if request.url.path.startswith('/ui'):
+                resp.headers.update({
+                    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+                    'Pragma': 'no-cache',
+                    'Expires': '0',
+                })
+            return resp
+
         app.mount('/ui', StaticFiles(directory=cfg.server.frontend_dir, html=True), name='ui')
         logger.info('WebUI mounted at /ui from %s', cfg.server.frontend_dir)
     else:
