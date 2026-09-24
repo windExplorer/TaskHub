@@ -57,6 +57,28 @@ def _apply_log_filters():
         logging.getLogger('asyncio').addFilter(_WsNoiseFilter())
 
 
+def _setup_logging(log_buffer: 'LogBuffer'):
+    """配置日志双通道：控制台 + WebUI 日志面板。
+
+    注意：root logger 默认 WARNING，而 uvicorn 的 dictConfig 不含 root 配置，
+    若不显式把 middle_station 提到 INFO，任务生命周期日志（queued/started/finished）
+    会被静默丢弃 —— 出问题时日志面板只剩 ERROR，无从排查。
+    """
+    fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+    ms = logging.getLogger('middle_station')
+    ms.setLevel(logging.INFO)
+    if not any(isinstance(h, logging.StreamHandler) for h in ms.handlers):
+        sh = logging.StreamHandler()
+        sh.setFormatter(fmt)
+        ms.addHandler(sh)
+    # WebUI 日志面板挂 root：除 middle_station 外还能收到 asyncio 等库的 ERROR
+    root = logging.getLogger()
+    for h in [h for h in root.handlers if isinstance(h, LogBuffer)]:
+        root.removeHandler(h)     # create_app 可能被调用两次（模块级 + CLI），先清旧的
+    log_buffer.setFormatter(fmt)
+    root.addHandler(log_buffer)
+
+
 # ============================================================================
 # 全局状态（由 create_app 初始化）
 # ============================================================================
@@ -268,6 +290,8 @@ def _register_routes(app: FastAPI):
                 'serialize_concurrent': cfg.comfyui.serialize_concurrent,
                 'watch_interval': cfg.comfyui.watch_interval,
                 'watch_timeout': cfg.comfyui.watch_timeout,
+                'watch_lost_grace': cfg.comfyui.watch_lost_grace,
+                'watch_lost_confirm': cfg.comfyui.watch_lost_confirm,
             },
             'monitoring': {
                 'gpu_threshold': cfg.monitoring.gpu_threshold,
@@ -493,9 +517,9 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     broadcaster = WSBroadcaster()
     log_buffer = LogBuffer(cfg.server.log_max_lines)
 
-    # 日志 -> WebUI 控制台
-    log_buffer.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
-    logging.getLogger().addHandler(log_buffer)
+    _setup_logging(log_buffer)
+    # 上次进程遗留的 running/queued 行只存在于 DB，启动时收敛为终态（避免任务页永远显示运行中）
+    storage.reconcile_stale()
 
     app = FastAPI(title='TaskHub', description='本地 LLM 调度', version='1.2.0', lifespan=lifespan)
     _register_routes(app)

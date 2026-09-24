@@ -57,8 +57,10 @@ class TTSConfig:
 class ComfyUIConfig:
     base_url: str = 'http://127.0.0.1:8188'    # 真实 ComfyUI
     serialize_concurrent: int = 1              # 同一时刻放行的 /prompt 数（单飞）
-    watch_interval: float = 4.0                # 轮询真实 /history 间隔
-    watch_timeout: float = 600.0               # 槽位跟踪超时（秒）
+    watch_interval: float = 2.0                # 轮询真实 /history 间隔
+    watch_timeout: float = 900.0               # 出图跟踪硬超时（秒），0 = 不限制
+    watch_lost_grace: float = 30.0             # 提交后 N 秒起核对真实 /queue，判定 prompt 是否被上游丢弃
+    watch_lost_confirm: int = 2                # 连续 N 次核对都既不在 /queue 也不在 /history 才判定「丢失」
 
 
 @dataclass
@@ -122,6 +124,12 @@ class Config:
             'MIDDLE_COMFYUI_WATCH_INTERVAL', float(c.get('watch_interval', cfg.comfyui.watch_interval)))
         cfg.comfyui.watch_timeout = _env_float(
             'MIDDLE_COMFYUI_WATCH_TIMEOUT', float(c.get('watch_timeout', cfg.comfyui.watch_timeout)))
+        cfg.comfyui.watch_lost_grace = _env_float(
+            'MIDDLE_COMFYUI_WATCH_LOST_GRACE',
+            float(c.get('watch_lost_grace', cfg.comfyui.watch_lost_grace)))
+        cfg.comfyui.watch_lost_confirm = _env_int(
+            'MIDDLE_COMFYUI_WATCH_LOST_CONFIRM',
+            int(c.get('watch_lost_confirm', cfg.comfyui.watch_lost_confirm)))
 
         # monitoring
         m = data.get('monitoring', {}) or {}

@@ -156,6 +156,14 @@ def synthesize(text, voice="xiaoyu.wav", max_retry=3):
 
 - 排队中/尚未提交的真实任务返回 `{}`（插件会持续轮询，不会误判完成）。
 - 完成后透传真实 ComfyUI 的历史 JSON（含 `outputs.images[]`）。
+- 任务已失败（上游执行报错 / `watch_timeout` 超时 / prompt 被上游丢弃）时返回
+  **合成错误条目**：`{prompt_id: {outputs: {}, status: {status_str: "error", completed: false, messages: [[..., {exception_message: "taskhub: ..."}]]}}}`。
+  插件据此立即结束轮询并提示失败，不会空转到自己的超时。
+
+> 单飞槽位**必定释放**：出图完成、硬超时 `comfyui.watch_timeout`、或「丢失检测」
+> （`watch_lost_grace` 后连续 `watch_lost_confirm` 次既不在真实 `/queue` 也不在真实
+> `/history`，说明真实 ComfyUI 中途重启/崩溃把 prompt 丢了）三条路径任一命中即终结任务，
+> 不会出现单飞槽位被永久占用、后续任务（含 TTS）全部排队饿死的情况。
 
 ### 2.4 `GET /history` — 全部历史（透传）
 

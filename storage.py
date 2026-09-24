@@ -66,6 +66,44 @@ class Storage:
             if 'text_len' not in cols:
                 c.execute('ALTER TABLE tasks ADD COLUMN text_len INTEGER DEFAULT 0')
 
+    # ---------- 启动对账 ----------
+
+    def reconcile_stale(self) -> int:
+        """把上一次进程遗留的未终结任务标记为中断（启动时调用一次）。
+
+        中转站的任务状态只存在于内存：进程被杀/重启后，DB 里上次留下的
+        running/waiting/queued 行永远不会再被更新，任务页会一直显示「运行中」，
+        看起来就像任务跑了几个小时。这里在启动时把它们收敛成终态。
+        """
+        now = time.time()
+        try:
+            with self._conn() as c:
+                cur = c.execute(
+                    """UPDATE tasks
+                       SET status='failed', status_code=500, finished_at=?,
+                           error='station restarted, task interrupted',
+                           run_seconds=CASE WHEN started_at > 0 THEN MAX(0, ? - started_at) ELSE 0 END
+                       WHERE status IN ('running','waiting')""",
+                    (now, now),
+                )
+                n_running = cur.rowcount or 0
+                cur = c.execute(
+                    """UPDATE tasks
+                       SET status='cancelled', status_code=499, finished_at=?,
+                           error='station restarted, task dropped from queue'
+                       WHERE status='queued'""",
+                    (now,),
+                )
+                n_queued = cur.rowcount or 0
+        except Exception as e:  # noqa: BLE001
+            logger.error('reconcile stale tasks failed: %s', e)
+            return 0
+        total = n_running + n_queued
+        if total:
+            logger.warning('reconciled %d stale task(s) left by previous run '
+                           '(running/waiting=%d, queued=%d)', total, n_running, n_queued)
+        return total
+
     # ---------- 写入 ----------
 
     async def record(self, task) -> None:
