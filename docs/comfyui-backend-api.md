@@ -354,6 +354,16 @@ async def healthz():
 
 - **中转站需不需要实现 `/queue`？**
   不需要。插件明确不调用 `/queue`，排队位置由插件本地 `_local_queue_*` 自行统计。
+  （中转站**自己**会调用真实后端的 `GET /queue` 做丢失判定，属于内部实现，不影响插件。）
+
+- **中转站能拿到每个任务的真实进度吗？**
+  能，但要自己订阅 `GET /ws?clientId=<提交时用的 client_id>`。注意 ComfyUI 的
+  `executing` / `executed` / `progress` / `progress_state` 事件是
+  `send_sync(event, data, server.client_id)` 发出的，而 `server.client_id` 在执行期间等于该
+  prompt 的 `extra_data["client_id"]`；`send_json` 在该 sid 不在线时**静默丢弃**。
+  因此中转站要么用插件原本的 `client_id` 建 WS，要么在转发 `/prompt` 时统一改写
+  `client_id` 为自己的固定值再订阅（`event: status` 是广播，任何连接都能收到）。
+
 
 - **插件认不认得「排队中」的响应？**
   不认得。因此中转站不要对 `/prompt` 返回自定义排队码（如 429/排队号），而应**内部阻塞等待空槽位后再转发**，把真实 ComfyUI 的响应原样返回——这样才能对插件零改动地生效。

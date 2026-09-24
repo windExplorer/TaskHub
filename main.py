@@ -29,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from adapters import BackendError, ComfyAdapter, TTSAdapter
 from adapters.tts import clean_prompt_text
 from config import Config
+from inspector import UpstreamInspector
 from monitor import ResourceMonitor
 from scheduler import Scheduler, Task
 from storage import Storage
@@ -88,6 +89,7 @@ scheduler: Optional[Scheduler] = None
 storage: Optional[Storage] = None
 tts: Optional[TTSAdapter] = None
 comfy: Optional[ComfyAdapter] = None
+inspector: Optional[UpstreamInspector] = None
 broadcaster: Optional['WSBroadcaster'] = None
 log_buffer: Optional['LogBuffer'] = None
 _app: Optional[FastAPI] = None
@@ -159,9 +161,13 @@ async def lifespan(app: FastAPI):
     await monitor.start()
     scheduler.start()
     await tts.start()
-    logger.info('TaskHub up: http://%s:%s (tts=%s, comfyui=%s)',
-                cfg.server.host, cfg.server.port, cfg.tts.base_url, cfg.comfyui.base_url)
+    comfy.start()                 # 订阅真实 ComfyUI 的进度事件（/ws）
+    inspector.start()             # 上游自检巡检
+    logger.info('TaskHub up: http://%s:%s (tts=%s, comfyui=%s, client_id=%s)',
+                cfg.server.host, cfg.server.port, cfg.tts.base_url,
+                cfg.comfyui.base_url, comfy.client_id)
     yield
+    await inspector.stop()
     await tts.stop()
     await monitor.stop()
     await scheduler.stop()
@@ -176,6 +182,17 @@ async def _on_task_update(task: Task):
     except Exception as e:  # noqa: BLE001
         logger.warning('record task failed: %s', e)
     await broadcaster.publish({'event': 'task_update', 'task': task.to_dict()})
+
+
+async def _on_task_live_update(task: Task):
+    """高频实时更新（真实进度 / 自检异常）：只推 WebSocket，不落库。"""
+    await broadcaster.publish({'event': 'task_update', 'task': task.to_dict()})
+
+
+def _self_check() -> Dict:
+    if inspector is None:
+        return {'level': 'ok', 'count': 0, 'items': []}
+    return inspector.summary()
 
 
 # ============================================================================
@@ -240,6 +257,7 @@ def _register_routes(app: FastAPI):
             'running': scheduler.running_tasks,
             'max_concurrent': scheduler.max_concurrent,
             'sample_rate': tts.sample_rate,
+            'self_check': _self_check(),
         }
 
     @app.get('/monitor')
@@ -254,7 +272,21 @@ def _register_routes(app: FastAPI):
             'max_concurrent': st['max_concurrent'],
             'effective_concurrent': st['effective_concurrent'],
             'throttle_reason': st['throttle_reason'],
+            'self_check': _self_check(),
         }
+
+    @app.get('/self-check')
+    async def self_check_api():
+        """上游自检详情：异常清单 + 上游探测快照 + 进度流状态。"""
+        return _self_check()
+
+    @app.post('/self-check/run')
+    async def self_check_run():
+        """手动触发一次自检（排查时不用等下一个周期）。"""
+        if inspector is None:
+            raise HTTPException(status_code=503, detail='inspector unavailable')
+        await inspector.check_once()
+        return _self_check()
 
     @app.get('/stats')
     async def stats_api(hours: int = 24):
@@ -287,15 +319,24 @@ def _register_routes(app: FastAPI):
             },
             'comfyui': {
                 'base_url': cfg.comfyui.base_url,
+                'client_id': comfy.client_id,
                 'serialize_concurrent': cfg.comfyui.serialize_concurrent,
                 'watch_interval': cfg.comfyui.watch_interval,
                 'watch_timeout': cfg.comfyui.watch_timeout,
                 'watch_lost_grace': cfg.comfyui.watch_lost_grace,
                 'watch_lost_confirm': cfg.comfyui.watch_lost_confirm,
+                'progress_stream': cfg.comfyui.progress_stream,
             },
             'monitoring': {
                 'gpu_threshold': cfg.monitoring.gpu_threshold,
                 'interval_seconds': cfg.monitoring.interval_seconds,
+            },
+            'inspector': {
+                'enabled': cfg.inspector.enabled,
+                'interval': cfg.inspector.interval,
+                'slow_factor': cfg.inspector.slow_factor,
+                'slow_min_seconds': cfg.inspector.slow_min_seconds,
+                'stall_seconds': cfg.inspector.stall_seconds,
             },
         }
 
@@ -426,6 +467,7 @@ def _register_routes(app: FastAPI):
                     'max_concurrent': st['max_concurrent'],
                     'effective_concurrent': st['effective_concurrent'],
                     'throttle_reason': st['throttle_reason'],
+                    'self_check': _self_check(),
                 })
                 await asyncio.sleep(1.0)
         except WebSocketDisconnect:
@@ -493,7 +535,7 @@ def _register_routes(app: FastAPI):
 # 应用工厂
 # ============================================================================
 def create_app(config_path: Optional[str] = None) -> FastAPI:
-    global cfg, monitor, scheduler, storage, tts, comfy, broadcaster, log_buffer, _app
+    global cfg, monitor, scheduler, storage, tts, comfy, inspector, broadcaster, log_buffer, _app
 
     _apply_log_filters()
 
@@ -514,6 +556,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     storage = Storage(cfg.server.db_path)
     tts = TTSAdapter(cfg)
     comfy = ComfyAdapter(cfg, scheduler)
+    inspector = UpstreamInspector(cfg, scheduler, comfy, storage, tts=tts, monitor=monitor)
     broadcaster = WSBroadcaster()
     log_buffer = LogBuffer(cfg.server.log_max_lines)
 
@@ -524,6 +567,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     app = FastAPI(title='TaskHub', description='本地 LLM 调度', version='1.2.0', lifespan=lifespan)
     _register_routes(app)
     scheduler.on_task_update(_on_task_update)
+    scheduler.on_task_live_update(_on_task_live_update)
     _app = app
     return app
 

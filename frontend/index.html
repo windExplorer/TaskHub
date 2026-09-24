@@ -131,6 +131,7 @@
     </div>
     <div class="flex flex-wrap items-center gap-2">
       <span id="backend-status" class="text-xs px-3 py-1.5 rounded-full border-card" style="background:var(--chip); color:var(--text-mute)">探测后端…</span>
+      <span id="self-check" class="text-xs px-3 py-1.5 rounded-full border-card cursor-default" style="background:var(--chip); color:var(--text-mute)" title="上游自检">自检：–</span>
       <span id="conn-status" class="text-xs px-3 py-1.5 rounded-full border-card" style="background:var(--chip); color:var(--text-mute)">连接中…</span>
       <a href="/ui/stats.html" class="text-xs px-3 py-1.5 rounded-full bg-hover border border-card text-mute hover:text-main" title="任务统计">统计</a>
       <a href="/ui/api.html" class="text-xs px-3 py-1.5 rounded-full bg-hover border border-card text-mute hover:text-main" title="API 接口文档">API 文档</a>
@@ -368,6 +369,41 @@ function pushChart(chart, values) {
   chart.update('none');
 }
 
+// ---------- 上游自检状态 ----------
+const SC_STYLE = {
+  ok:    ['自检：正常', 'rgba(52,211,153,.15)', '#34d399', 'rgba(52,211,153,.35)'],
+  info:  ['自检：提示', 'rgba(56,189,248,.15)', '#7dd3fc', 'rgba(56,189,248,.35)'],
+  warn:  ['自检：异常', 'rgba(251,191,36,.15)', '#fcd34d', 'rgba(251,191,36,.35)'],
+  error: ['自检：异常', 'rgba(244,63,94,.15)', '#fb7185', 'rgba(244,63,94,.35)'],
+};
+function updateSelfCheck(sc) {
+  const el = $('self-check');
+  if (!el) return;
+  if (!sc) { el.textContent = '自检：–'; return; }
+  const [text, bg, fg, bd] = SC_STYLE[sc.level] || SC_STYLE.ok;
+  el.textContent = sc.count ? `${text} ${sc.count}` : text;
+  el.style.background = bg; el.style.color = fg; el.style.borderColor = bd;
+  const lines = (sc.items || []).map((a) => `[${a.level}] ${a.code}: ${a.msg}`);
+  const ps = sc.progress_stream;
+  if (ps) {
+    const ago = ps.last_event_ago === null || ps.last_event_ago === undefined ? '–' : ps.last_event_ago + 's';
+    lines.push(`进度订阅(/ws)：${ps.connected ? '已连接' : '未连接'}，最近事件 ${ago} 前` +
+               (ps.queue_remaining === null || ps.queue_remaining === undefined ? '' : `，上游队列剩余 ${ps.queue_remaining}`));
+  }
+  const probe = sc.probe || {};
+  if (probe.reachable !== undefined) {
+    lines.push(`上游 /queue：${probe.reachable ? '可达' : '不可达'}` +
+               `（执行中 ${(probe.running || []).length}，排队 ${(probe.pending || []).length}` +
+               (probe.vram_free_gb ? `，显存可用 ${probe.vram_free_gb}GB` : '') + '）');
+  }
+  el.title = lines.length ? lines.join('\n') : '上游自检：核对 /queue 与 /ws 进度，未发现异常';
+  // 任务行标红依赖 anomaly，异常变化时刷新一次表格
+  if ((sc.count || 0) !== updateSelfCheck._last) {
+    updateSelfCheck._last = sc.count || 0;
+    renderTasks();
+  }
+}
+
 // ---------- Monitor WS ----------
 function connectMonitor() {
   const ws = new WebSocket(`ws://${location.host}/ws/monitor`);
@@ -397,6 +433,7 @@ function connectMonitor() {
     $('backend-status').style.borderColor = overload ? 'rgba(244,63,94,.35)' : 'rgba(52,211,153,.35)';
     pushChart(chartLoad, [d.cpu_percent, d.gpu_load * 100]);
     pushChart(chartQueue, [d.queue_length, d.running, d.effective_concurrent]);
+    updateSelfCheck(d.self_check);
   };
   ws.onclose = () => { setConn('离线', true); setTimeout(connectMonitor, 3000); };
   ws.onerror = () => ws.close();
@@ -404,12 +441,41 @@ function connectMonitor() {
 
 // ---------- Tasks WS ----------
 const tasksMap = new Map();
+// 自检异常标记（复用状态色板，图标 + 缩写，完整信息在 title）
+const ANOM_STYLE = {
+  error: { fg: 'var(--st-failed-fg)', bg: 'var(--st-failed-bg)', bd: 'var(--st-failed-bd)', icon: '⛔' },
+  warn:  { fg: 'var(--st-timeout-fg)', bg: 'var(--st-timeout-bg)', bd: 'var(--st-timeout-bd)', icon: '⚠' },
+  info:  { fg: 'var(--st-running-fg)', bg: 'var(--st-running-bg)', bd: 'var(--st-running-bd)', icon: 'ℹ' },
+};
+const ANOM_LABEL = {
+  lost: '上游已丢弃', stalled: '疑似卡住', slow: '耗时超基线',
+  slot_wait: '等槽位过久', upstream_external: '上游外部任务',
+  upstream_vram_low: '上游显存不足', upstream_unreachable: '上游不可达', tts_not_ready: '语音后端未就绪',
+};
+const esc = (s) => String(s == null ? '' : s).replace(/[<>&"]/g, (c) => ({ '<':'&lt;', '>':'&gt;', '&':'&amp;', '"':'&quot;' }[c]));
+
+function anomalyHtml(a) {
+  if (!a) return '';
+  const s = ANOM_STYLE[a.level] || ANOM_STYLE.warn;
+  const label = `${s.icon} ${ANOM_LABEL[a.code] || a.code}`;
+  return `<div class="mt-1"><span class="text-[10px] px-1.5 py-0.5 rounded-md whitespace-nowrap"
+    style="background:${s.bg}; color:${s.fg}; border:1px solid ${s.bd}" title="${esc(a.msg)}">${label}</span></div>`;
+}
+function progressHtml(t) {
+  const p = t.progress || {};
+  if (t.task_type !== 'comfyui' || !p.nodes_total) return '';
+  const pct = Math.min(100, Math.round((p.nodes_done || 0) / p.nodes_total * 100));
+  const step = p.step_total ? ` · 步 ${p.step}/${p.step_total}` : '';
+  return `<div class="mt-1 text-[10px] text-dim mono whitespace-nowrap">${p.nodes_done || 0}/${p.nodes_total} 节点${step} · ${pct}%</div>
+    <div class="bar mt-1" style="height:3px"><div style="width:${pct}%; background:var(--st-running-fg)"></div></div>`;
+}
 function taskRow(t) {
   const tr = document.createElement('tr');
   tr.dataset.id = t.task_id;
   tr.dataset.created = t.created_at || '';
   tr.dataset.started = t.started_at || '';
   tr.dataset.status = t.status || '';
+  tr.dataset.anomaly = (t.anomaly && t.anomaly.level) || '';
   tr.className = 'border-b border-card bg-hover';
   const canAct = t.status === 'queued';
   const tc = TYPE_COLORS[t.task_type] || { fg: 'var(--accent)', bg: 'color-mix(in srgb, var(--accent) 12%, transparent)', bd: 'color-mix(in srgb, var(--accent) 25%, transparent)' };
@@ -417,7 +483,11 @@ function taskRow(t) {
     <td class="px-5 py-2.5 mono text-xs text-mute">${t.task_id}</td>
     <td class="px-3 py-2.5"><span class="text-xs px-2 py-0.5 rounded-md" style="background:${tc.bg}; color:${tc.fg}; border:1px solid ${tc.bd}">${TYPE_LABEL[t.task_type] || t.task_type}</span></td>
     <td class="px-3 py-2.5 text-right mono text-xs text-mute">${t.task_type === 'tts' ? (t.text_len || '–') + '字' : '–'}</td>
-    <td class="px-3 py-2.5"><span class="st st-${t.status}">${STATUS_LABEL[t.status] || t.status}</span></td>
+    <td class="px-3 py-2.5">
+      <span class="st st-${t.status}">${STATUS_LABEL[t.status] || t.status}</span>
+      ${anomalyHtml(t.anomaly)}
+      ${progressHtml(t)}
+    </td>
     <td class="px-3 py-2.5 text-right mono text-xs text-mute q-sec">${fmt(t.queue_seconds)}s</td>
     <td class="px-3 py-2.5 text-right mono text-xs text-mute r-sec">${fmt(t.run_seconds)}s</td>
     <td class="px-3 py-2.5 mono text-xs text-mute">${fmtTime(t.created_at)}</td>
@@ -475,6 +545,10 @@ function startTimeTick() {
       }
       if (r && (status === 'running' || status === 'waiting')) {
         r.textContent = fmt(started ? Math.max(0, now - started) : 0) + 's';
+        // 自检判定异常（超基线/卡住）时，运行时长标红，一眼看出「哪个任务不对劲」
+        const lv = tr.dataset.anomaly || '';
+        r.style.color = (lv === 'warn' || lv === 'error') ? 'var(--st-failed-fg)' : '';
+        r.style.fontWeight = (lv === 'warn' || lv === 'error') ? '600' : '';
       }
     });
   }, 1000);
@@ -583,11 +657,17 @@ async function loadConfig() {
         ['voices_dir', '参考音频目录'], ['voices', '音色数'],
       ]],
       ['comfyui', d.comfyui, [
-        ['base_url', 'ComfyUI 后端'], ['serialize_concurrent', '单飞并发'],
-        ['watch_interval', '轮询间隔(s)'], ['watch_timeout', '跟踪超时(s)'],
+        ['base_url', 'ComfyUI 后端'], ['client_id', '提交用 client_id'],
+        ['serialize_concurrent', '单飞并发'], ['watch_interval', '轮询间隔(s)'],
+        ['watch_timeout', '跟踪超时(s)'], ['watch_lost_grace', '丢失判定宽限(s)'],
+        ['progress_stream', '订阅 /ws 进度'],
       ]],
       ['monitoring', d.monitoring, [
         ['gpu_threshold', 'GPU 阈值'], ['interval_seconds', '采样间隔(s)'],
+      ]],
+      ['inspector', d.inspector, [
+        ['enabled', '自检启用'], ['interval', '巡检周期(s)'], ['slow_factor', '超基线系数'],
+        ['slow_min_seconds', '基线阈值下限(s)'], ['stall_seconds', '无进度告警(s)'],
       ]],
     ];
     sections.forEach(([key, obj, fields]) => {

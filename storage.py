@@ -301,6 +301,48 @@ class Storage:
             return {'hours': hours, 'bucket': 'hour', 'summary': {},
                     'by_type': {}, 'by_status': {}, 'series': []}
 
+    # ---------- 耗时基线（自检用） ----------
+
+    async def duration_baseline(self, hours: float = 24.0, limit: int = 5000) -> Dict[str, Dict]:
+        """按任务类型统计历史成功任务耗时（p50 / p95），供自检判断「耗时异常」。
+
+        样本太少时 n 很小，调用方需自行用 slow_min_seconds 兜底。
+        """
+        return await asyncio.to_thread(self._baseline_sync, hours, limit)
+
+    def _baseline_sync(self, hours: float, limit: int) -> Dict[str, Dict]:
+        cutoff = time.time() - hours * 3600
+        out: Dict[str, Dict] = {}
+        try:
+            with self._conn() as c:
+                rows = c.execute(
+                    """SELECT task_type, run_seconds FROM tasks
+                       WHERE status='done' AND created_at >= ? AND run_seconds > 0
+                       ORDER BY created_at DESC LIMIT ?""",
+                    (cutoff, limit)).fetchall()
+        except Exception as e:  # noqa: BLE001
+            logger.error('duration baseline failed: %s', e)
+            return out
+        buckets: Dict[str, List[float]] = {}
+        for r in rows:
+            buckets.setdefault(r[0] or 'unknown', []).append(float(r[1]))
+
+        def _pct(vals: List[float], p: float) -> float:
+            if not vals:
+                return 0.0
+            idx = min(len(vals) - 1, max(0, int(round(p / 100.0 * len(vals))) - 1))
+            return round(sorted(vals)[idx], 2)
+
+        for k, vals in buckets.items():
+            out[k] = {
+                'n': len(vals),
+                'p50': _pct(vals, 50),
+                'p95': _pct(vals, 95),
+                'max': round(max(vals), 2),
+                'avg': round(sum(vals) / len(vals), 2),
+            }
+        return out
+
     async def list_tasks(self, limit: int = 200) -> List[Dict]:
         return await asyncio.to_thread(self._list_sync, limit)
 

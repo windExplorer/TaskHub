@@ -19,11 +19,14 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import Dict, Optional, Tuple
 
 import httpx
 
 from scheduler import BackendError, Task
+
+from .comfy_ws import ComfyEventStream
 
 logger = logging.getLogger('middle_station.comfyui')
 
@@ -35,6 +38,9 @@ class ComfyAdapter:
         self.watch_timeout = cfg.comfyui.watch_timeout
         self.watch_lost_grace = max(0.0, float(getattr(cfg.comfyui, 'watch_lost_grace', 30.0)))
         self.watch_lost_confirm = max(1, int(getattr(cfg.comfyui, 'watch_lost_confirm', 2)))
+        # 提交给真实 ComfyUI 的 client_id：进度事件只发给「提交该 prompt 的 client」
+        # （ComfyUI send_sync 带 sid，sid 不在线就丢弃），所以由中转站统一持有并订阅。
+        self.client_id = getattr(cfg.comfyui, 'client_id', None) or f'taskhub-{uuid.uuid4().hex[:8]}'
         self._scheduler = scheduler
         self.sem = asyncio.Semaphore(cfg.comfyui.serialize_concurrent)
         self.states: Dict[str, str] = {}      # 虚拟prompt_id -> queued/running/done/failed
@@ -44,13 +50,147 @@ class ComfyAdapter:
         # 失败任务的合成 history 条目：插件轮询 /history/{虚拟pid} 时立刻拿到明确失败，
         # 而不是永远空 {}（否则插件要一直轮询到自己的超时）。
         self.failed_entries: Dict[str, Dict] = {}
+        # 真实进度（订阅 /ws 得到）：real_pid -> {nodes_done, nodes_total, node, step, step_total, ts, state}
+        self.progress: Dict[str, Dict] = {}
+        self._tasks_by_real: Dict[str, Task] = {}
+        self._vpids_by_real: Dict[str, str] = {}
+        self._watch_tasks: Dict[str, asyncio.Task] = {}
+        self._push_at: Dict[str, float] = {}
+        self._flush_tasks: Dict[str, asyncio.Task] = {}
+        self.push_interval = 1.0    # 进度推送节流窗口（秒）
+        self.progress_stream: Optional[ComfyEventStream] = None
+        if getattr(cfg.comfyui, 'progress_stream', True):
+            self.progress_stream = ComfyEventStream(
+                self.base_url, self.client_id, self._on_event)
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=10.0, read=cfg.server.infer_timeout + 30.0,
                 write=30.0, pool=10.0))
 
+    def start(self):
+        """订阅真实 ComfyUI 的进度事件（断线自动重连）。"""
+        if self.progress_stream is not None:
+            self.progress_stream.start()
+
     async def close(self):
+        if self.progress_stream is not None:
+            await self.progress_stream.stop()
+        # 停掉所有 _watch（否则关闭时会因 client 已释放而刷 "watch failed" 日志）
+        for wt in list(self._watch_tasks.values()):
+            wt.cancel()
+        for ft in list(self._flush_tasks.values()):
+            ft.cancel()
+        self._watch_tasks.clear()
+        self._flush_tasks.clear()
         await self._client.aclose()
+
+    # ---------- 真实进度（/ws 事件） ----------
+
+    async def _on_event(self, etype: str, data: Dict):
+        """把真实 ComfyUI 的事件折算成任务进度，节流后推给调度器（UI 实时展示）。"""
+        pid = data.get('prompt_id')
+        if not pid:
+            return
+        prog = self.progress.get(pid)
+        if prog is None:
+            if etype not in ('execution_start', 'executing', 'progress', 'progress_state', 'executed'):
+                return
+            prog = self.progress[pid] = {
+                'nodes_done': 0, 'nodes_total': self._nodes_total(pid), 'nodes_cached': 0,
+                'node': None, 'step': None, 'step_total': None,
+                'state': 'running', 'ts': time.time(), 'started': time.time(),
+            }
+        prog['ts'] = time.time()
+        if etype == 'execution_cached':
+            cached = data.get('nodes') or []
+            prog['nodes_cached'] = len(cached)
+            prog['nodes_done'] = max(prog['nodes_done'], len(cached))
+        elif etype == 'executing':
+            node = data.get('node')
+            if node is None:
+                prog['state'] = 'finishing'
+            else:
+                prog['node'] = str(node)
+                if prog['state'] != 'running':
+                    prog['state'] = 'running'
+        elif etype == 'executed':
+            prog['nodes_done'] = max(prog['nodes_done'], prog['nodes_done'] + 1)
+            prog['step'] = prog['step_total'] = None
+        elif etype == 'progress':
+            prog['node'] = str(data.get('node') or prog.get('node') or '')
+            prog['step'] = data.get('value')
+            prog['step_total'] = data.get('max')
+        elif etype == 'progress_state':
+            self._merge_progress_state(prog, data.get('nodes') or {})
+        elif etype == 'execution_error':
+            prog['state'] = 'error'
+        elif etype == 'execution_start':
+            prog['state'] = 'running'
+        self._push_progress(pid)
+
+    @staticmethod
+    def _merge_progress_state(prog: Dict, nodes: Dict):
+        """合并 progress_state（ComfyUI ≥0.3 的节点级进度）。"""
+        done = 0
+        best = None
+        for node_id, st in nodes.items():
+            state = str((st or {}).get('state') or '')
+            if state in ('success', 'finished', 'error'):
+                done += 1
+            if st and (st.get('max') or 0):
+                best = (node_id, st.get('value'), st.get('max'), state)
+        prog['nodes_done'] = max(prog['nodes_done'], done)
+        if best:
+            prog['node'] = str(best[0])
+            prog['step'] = best[1]
+            prog['step_total'] = best[2]
+
+    def _nodes_total(self, real_pid: str) -> int:
+        task = self._tasks_by_real.get(real_pid)
+        prompt = ((task.payload or {}) if task else {}).get('prompt')
+        return len(prompt) if isinstance(prompt, dict) else 0
+
+    def _push_progress(self, real_pid: str, force: bool = False):
+        task = self._tasks_by_real.get(real_pid)
+        if task is None or self._scheduler is None:
+            return
+        prog = self.progress.get(real_pid) or {}
+        now = time.time()
+        last = self._push_at.get(real_pid, 0.0)
+        node_changed = getattr(task, 'progress', {}).get('node') != prog.get('node')
+        if not force and not node_changed and now - last < self.push_interval:
+            # 节流：进度事件很密，最多 push_interval 推一次（换节点时立即推）。
+            # 但要补一次末尾推送，否则「最后一步之后事件停了」会让 UI 永远停在旧值。
+            self._schedule_flush(real_pid, self.push_interval - (now - last))
+            return
+        self._push_at[real_pid] = now
+        self._scheduler.set_task_progress(task, {
+            'nodes_done': prog.get('nodes_done', 0),
+            'nodes_total': prog.get('nodes_total', 0),
+            'node': prog.get('node'),
+            'step': prog.get('step'),
+            'step_total': prog.get('step_total'),
+            'state': prog.get('state', 'running'),
+            'updated_at': round(now, 3),
+        })
+
+    def _schedule_flush(self, real_pid: str, delay: float):
+        """节流窗口结束时补推一次进度（合并密集事件，又不会丢最后一步）。"""
+        existing = self._flush_tasks.get(real_pid)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(self._flush_later(real_pid, delay))
+        self._flush_tasks[real_pid] = task
+
+    async def _flush_later(self, real_pid: str, delay: float):
+        try:
+            await asyncio.sleep(max(0.05, delay))
+            self._push_progress(real_pid, force=True)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self._flush_tasks.get(real_pid) is asyncio.current_task():
+                self._flush_tasks.pop(real_pid, None)
 
     # ---------- 核心：提交任务（单飞调度） ----------
 
@@ -83,17 +223,39 @@ class ComfyAdapter:
         self.task_ids[virtual_pid] = task.task_id
         self._watchers[virtual_pid] = task
         self.pid_map[virtual_pid] = real_pid
+        self._tasks_by_real[real_pid] = task
+        self._vpids_by_real[real_pid] = virtual_pid
+        self.progress[real_pid] = {
+            'nodes_done': 0, 'nodes_total': self._nodes_total(real_pid) or len(payload.get('prompt') or {}),
+            'nodes_cached': 0, 'node': None, 'step': None, 'step_total': None,
+            'state': 'queued', 'ts': time.time(), 'started': time.time(),
+        }
         self.failed_entries.pop(virtual_pid, None)
         # 提交成功：任务保持 running（pending_confirm），
         # 等待 _watch 轮询真实出图结果后由 confirm_task() 终结；槽位由 _watch 释放。
         task.pending_confirm = True
-        asyncio.create_task(self._watch(virtual_pid, real_pid, self.sem))
+        self._watch_tasks[virtual_pid] = asyncio.create_task(
+            self._watch(virtual_pid, real_pid, self.sem))
         return data   # 真实 pid 仅在内部使用，对外返回虚拟 pid
+
+    def _forward_payload(self, payload: dict) -> dict:
+        """转发给真实 ComfyUI 的请求体：剥掉中转站私有字段，统一 client_id。
+
+        统一 client_id 的原因见 comfy_ws.py：ComfyUI 的 executing/progress 事件只发给
+        「提交该 prompt 的 client」，中转站必须用同一个 id 建 WS 才收得到进度。
+        """
+        body = {k: v for k, v in (payload or {}).items() if not str(k).startswith('_')}
+        orig = body.get('client_id')
+        if orig and orig != self.client_id:
+            body['_client_id_original'] = orig
+        body['client_id'] = self.client_id
+        return body
 
     async def _submit_upstream(self, payload: dict) -> dict:
         """转发 POST /prompt；失败映射为 BackendError（状态码原样透传上游）。"""
+        body = self._forward_payload(payload)
         try:
-            resp = await self._client.post(f'{self.base_url}/prompt', json=payload)
+            resp = await self._client.post(f'{self.base_url}/prompt', json=body)
         except httpx.TimeoutException as e:
             raise BackendError(504, f'upstream submit timeout: {e}') from e
         except httpx.RequestError as e:
@@ -128,11 +290,32 @@ class ComfyAdapter:
                 },
                 'meta': {},
             }
+        else:
+            self._push_progress(prompt_id, force=True)
         task = self._watchers.pop(prompt_id, None)
+        # 终结即停掉该任务的 _watch（它负责归还单飞槽位），避免槽位被继续占住
+        watch_task = self._watch_tasks.pop(prompt_id, None)
+        if watch_task is not None and watch_task is not asyncio.current_task():
+            watch_task.cancel()
+        real_pid = self.pid_map.get(prompt_id)
+        if real_pid:
+            self._tasks_by_real.pop(real_pid, None)
+            self._push_at.pop(real_pid, None)
+            flush = self._flush_tasks.pop(real_pid, None)
+            if flush is not None:
+                flush.cancel()
         if task is not None and self._scheduler is not None:
             self._scheduler.confirm_task(task, status, code, error)
 
-    async def _history_entry(self, real_pid: str):
+    def abort_task(self, task: Task, code: int = 500, error: str = 'aborted by inspector') -> bool:
+        """外部判定任务已不可救（如自检发现上游把 prompt 丢了）时终结它并释放槽位。"""
+        virtual_pid = ((task.payload or {}).get('_virtual_pid')) or task.task_id
+        if virtual_pid not in self._watchers:
+            return False
+        self._finish(virtual_pid, 'failed', code, error)
+        return True
+
+    async def history_entry(self, real_pid: str):
         """查真实 /history/{real_pid}。返回 (entry|None, 查询是否成功)。
 
         entry 为 None 表示上游还没有该 prompt 的结果（可能仍在执行，也可能已被丢弃）。
@@ -156,25 +339,66 @@ class ComfyAdapter:
 
         中转站内部使用；插件本身不调用 /queue（见 docs/comfyui-backend-api.md §1）。
         """
-        try:
-            r = await self._client.get(f'{self.base_url}/queue')
-        except httpx.RequestError:
+        probe = await self.upstream_probe()
+        if not probe['reachable']:
             return True, False       # 查询失败时保守认为「还在队列」，避免误判
+        return (real_pid in probe['running'] or real_pid in probe['pending']), True
+
+    async def upstream_probe(self, system_stats: bool = False,
+                             timeout: float = 5.0) -> Dict:
+        """探测真实上游：/queue 里有哪些 prompt（自检与丢失判定共用）。
+
+        返回 {'reachable', 'running', 'pending', 'vram_free_gb', 'vram_total_gb'}，
+        reachable=False 表示上游 /queue 不可达（此时不应做「丢失」判定）。
+        """
+        out: Dict = {
+            'reachable': False,
+            'running': set(),
+            'pending': set(),
+            'vram_free_gb': None,
+            'vram_total_gb': None,
+        }
+        try:
+            r = await self._client.get(f'{self.base_url}/queue', timeout=timeout)
+        except httpx.RequestError:
+            return out
         if r.status_code != 200:
-            return True, False
+            return out
         try:
             data = r.json()
         except ValueError:
-            return True, False
+            return out
         if not isinstance(data, dict):
-            return True, False
-        for key in ('queue_running', 'queue_pending'):
+            return out
+        out['reachable'] = True
+        for key, bucket in (('queue_running', 'running'), ('queue_pending', 'pending')):
             for item in data.get(key) or []:
                 pid = item.get('prompt_id') if isinstance(item, dict) else (
                     item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else None)
-                if pid == real_pid:
-                    return True, True
-        return False, True
+                if pid:
+                    out[bucket].add(pid)
+        if system_stats:
+            try:
+                rs = await self._client.get(f'{self.base_url}/system_stats', timeout=timeout + 3.0)
+                dev = ((rs.json() or {}).get('devices') or [{}])[0] if rs.status_code == 200 else {}
+                if dev.get('vram_total'):
+                    out['vram_total_gb'] = round(dev['vram_total'] / (1024 ** 3), 2)
+                    out['vram_free_gb'] = round((dev.get('vram_free') or 0) / (1024 ** 3), 2)
+            except (httpx.RequestError, ValueError):
+                pass
+        return out
+
+    def watching(self) -> Dict[str, Dict]:
+        """当前被中转站跟踪的所有真实 prompt（real_pid -> 进度/任务信息），供自检核对。"""
+        out: Dict[str, Dict] = {}
+        for real_pid, task in self._tasks_by_real.items():
+            out[real_pid] = {
+                'task_id': task.task_id,
+                'task': task,
+                'virtual_pid': self._vpids_by_real.get(real_pid),
+                'progress': self.progress.get(real_pid) or {},
+            }
+        return out
 
     async def _watch(self, virtual_pid: str, real_pid: str,
                      sem: Optional[asyncio.Semaphore] = None):
@@ -198,7 +422,7 @@ class ComfyAdapter:
                     self._finish(virtual_pid, 'failed', 504, 'draw timeout, no result')
                     return
                 await asyncio.sleep(self.watch_interval)
-                entry, ok = await self._history_entry(real_pid)
+                entry, ok = await self.history_entry(real_pid)
                 if entry is not None:
                     status_str = (entry.get('status') or {}).get('status_str', 'success')
                     if status_str == 'error':
@@ -282,6 +506,9 @@ class ComfyAdapter:
     def status(self) -> Dict:
         return {
             'base_url': self.base_url,
+            'client_id': self.client_id,
             'serialize_concurrent': self.sem._value,  # noqa: SLF001
             'states': dict(self.states),
+            'watching': list(self._tasks_by_real.keys()),
+            'progress': self.progress_stream.snapshot() if self.progress_stream else None,
         }

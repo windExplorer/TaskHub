@@ -49,6 +49,10 @@ class Task:
     pending_confirm: bool = field(default=False, compare=False)
     queue_position: int = field(default=0, compare=False)
     text_len: int = field(default=0, compare=False)
+    progress: Dict = field(default_factory=dict, compare=False)
+    anomaly: Optional[Dict] = field(default=None, compare=False)
+    # progress：真实上游的实时进度（如 ComfyUI 节点/步数），由适配层从 /ws 事件折算后写入。
+    # anomaly：自检巡检发现的异常（{level, code, msg, ts}），供 WebUI 标红与排查。
     # 语音任务文本字数（用于展示）；入队时从 payload 提取。
     # 入队时记录「前方还有几个任务（含进行中）」，供响应头 X-Queue-Position 返回。
     # pending_confirm True 表示 handler 已把请求交给真实后端（如 ComfyUI 已拿到
@@ -88,6 +92,8 @@ class Task:
             'resource_weight': self.resource_weight,
             'estimated_duration': self.estimated_duration,
             'text_len': self.text_len,
+            'progress': dict(self.progress or {}),
+            'anomaly': dict(self.anomaly) if self.anomaly else None,
         }
 
 
@@ -128,6 +134,9 @@ class Scheduler:
         self._worker: Optional[asyncio.Task] = None
         self._stopping = False
         self._listeners: List[Callable[[Task], Any]] = []
+        # 高频「实时」更新（进度/异常）单独走一条通道：只推 WebSocket，不落库，
+        # 避免每秒写一次 SQLite + 序列化工作流。
+        self._live_listeners: List[Callable[[Task], Any]] = []
 
     # ---------- 生命周期 ----------
 
@@ -151,14 +160,18 @@ class Scheduler:
         """注册任务状态变更监听（用于持久化 / WebSocket 广播）。fn 可为同步或协程。"""
         self._listeners.append(fn)
 
-    def _emit_async(self, task: Task):
+    def on_task_live_update(self, fn: Callable[[Task], Any]):
+        """注册「实时」更新监听（progress / anomaly），只应做 WebSocket 推送。"""
+        self._live_listeners.append(fn)
+
+    def _emit_async(self, task: Task, live: bool = False):
         try:
-            asyncio.create_task(self._emit(task))
+            asyncio.create_task(self._emit(task, live))
         except RuntimeError:
             pass  # 事件循环未运行（如 CLI 只读命令）
 
-    async def _emit(self, task: Task):
-        for fn in list(self._listeners):
+    async def _emit(self, task: Task, live: bool = False):
+        for fn in list(self._live_listeners if live else self._listeners):
             try:
                 r = fn(task)
                 if inspect.isawaitable(r):
@@ -389,6 +402,20 @@ class Scheduler:
         if status_code is not None:
             task.status_code = status_code
         self._emit_async(task)
+
+    def set_task_progress(self, task: Task, progress: Dict):
+        """更新真实上游进度（不落库，只推 WebSocket）。"""
+        if task.progress == progress:
+            return
+        task.progress = progress
+        self._emit_async(task, live=True)
+
+    def set_task_anomaly(self, task: Task, anomaly: Optional[Dict]):
+        """更新自检异常标记（不落库，只推 WebSocket）。"""
+        if task.anomaly == anomaly:
+            return
+        task.anomaly = anomaly
+        self._emit_async(task, live=True)
 
     def confirm_task(self, task: Task, status: str = 'done', status_code: int = 200,
                      error: str = ''):

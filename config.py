@@ -32,6 +32,13 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    v = _env(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in ('1', 'true', 'yes', 'on', 'y')
+
+
 @dataclass
 class ServerConfig:
     host: str = '0.0.0.0'
@@ -61,6 +68,8 @@ class ComfyUIConfig:
     watch_timeout: float = 900.0               # 出图跟踪硬超时（秒），0 = 不限制
     watch_lost_grace: float = 30.0             # 提交后 N 秒起核对真实 /queue，判定 prompt 是否被上游丢弃
     watch_lost_confirm: int = 2                # 连续 N 次核对都既不在 /queue 也不在 /history 才判定「丢失」
+    progress_stream: bool = True               # 订阅真实 ComfyUI /ws 拿真实进度（心跳/节点/步数）
+    client_id: Optional[str] = None            # 提交给真实 ComfyUI 的 client_id（None = 自动生成 taskhub-xxxx）
 
 
 @dataclass
@@ -72,11 +81,25 @@ class MonitoringConfig:
 
 
 @dataclass
+class InspectorConfig:
+    """上游自检巡检：周期性核对「调度器认为在跑的任务」与「真实上游」是否一致。"""
+    enabled: bool = True
+    interval: float = 10.0                     # 巡检周期（秒）
+    slow_factor: float = 3.0                   # 耗时 > 同类任务基线 P95 × factor 视为异常（只是告警，不杀任务）
+    slow_min_seconds: float = 60.0             # 基线阈值下限（秒），样本不足时用它兜底
+    stall_seconds: float = 240.0               # 上游在跑但这么久没有任何进度事件 → 疑似卡住（告警）
+    history_hours: float = 24.0                # 计算耗时基线用的历史窗口
+    baseline_ttl: float = 300.0                # 耗时基线缓存有效期（秒）
+    system_stats_every: int = 3                # 每 N 轮巡检查一次 /system_stats（上游显存）
+
+
+@dataclass
 class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     comfyui: ComfyUIConfig = field(default_factory=ComfyUIConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
+    inspector: InspectorConfig = field(default_factory=InspectorConfig)
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> 'Config':
@@ -130,6 +153,10 @@ class Config:
         cfg.comfyui.watch_lost_confirm = _env_int(
             'MIDDLE_COMFYUI_WATCH_LOST_CONFIRM',
             int(c.get('watch_lost_confirm', cfg.comfyui.watch_lost_confirm)))
+        cfg.comfyui.progress_stream = _env_bool(
+            'MIDDLE_COMFYUI_PROGRESS_STREAM',
+            bool(c.get('progress_stream', cfg.comfyui.progress_stream)))
+        cfg.comfyui.client_id = _env('MIDDLE_COMFYUI_CLIENT_ID') or c.get('client_id') or None
 
         # monitoring
         m = data.get('monitoring', {}) or {}
@@ -141,5 +168,25 @@ class Config:
             'MIDDLE_VRAM_MIN_FREE', float(m.get('vram_min_free_gb', cfg.monitoring.vram_min_free_gb)))
         cfg.monitoring.interval_seconds = _env_float(
             'MIDDLE_MONITOR_INTERVAL', float(m.get('interval_seconds', cfg.monitoring.interval_seconds)))
+
+        # inspector
+        i = data.get('inspector', {}) or {}
+        cfg.inspector.enabled = _env_bool(
+            'MIDDLE_INSPECTOR_ENABLED', bool(i.get('enabled', cfg.inspector.enabled)))
+        cfg.inspector.interval = _env_float(
+            'MIDDLE_INSPECTOR_INTERVAL', float(i.get('interval', cfg.inspector.interval)))
+        cfg.inspector.slow_factor = _env_float(
+            'MIDDLE_INSPECTOR_SLOW_FACTOR', float(i.get('slow_factor', cfg.inspector.slow_factor)))
+        cfg.inspector.slow_min_seconds = _env_float(
+            'MIDDLE_INSPECTOR_SLOW_MIN', float(i.get('slow_min_seconds', cfg.inspector.slow_min_seconds)))
+        cfg.inspector.stall_seconds = _env_float(
+            'MIDDLE_INSPECTOR_STALL', float(i.get('stall_seconds', cfg.inspector.stall_seconds)))
+        cfg.inspector.history_hours = _env_float(
+            'MIDDLE_INSPECTOR_HISTORY_HOURS', float(i.get('history_hours', cfg.inspector.history_hours)))
+        cfg.inspector.baseline_ttl = _env_float(
+            'MIDDLE_INSPECTOR_BASELINE_TTL', float(i.get('baseline_ttl', cfg.inspector.baseline_ttl)))
+        cfg.inspector.system_stats_every = _env_int(
+            'MIDDLE_INSPECTOR_SYSTEM_STATS_EVERY',
+            int(i.get('system_stats_every', cfg.inspector.system_stats_every)))
 
         return cfg

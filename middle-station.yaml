@@ -26,9 +26,21 @@ comfyui:
   watch_timeout: 900                 # 出图跟踪硬超时（秒），到时标失败并释放单飞槽位；0 = 不限时（不推荐）
   watch_lost_grace: 30               # 提交后 N 秒起核对真实 /queue，判断 prompt 是否已被上游丢弃
   watch_lost_confirm: 2              # 连续 N 次「既不在 /queue 也不在 /history」才判丢失（防误判）
+  progress_stream: true              # 订阅真实 ComfyUI /ws：真实进度（节点/步数）+ 卡死判据
+  client_id: null                    # 提交给 ComfyUI 的 client_id，null = 自动生成 taskhub-xxxxxxxx
 
 monitoring:
   gpu_threshold: 0.8                 # GPU 算力占用率 >80% 时自动降并发
   vram_threshold: 0.25               # 可用显存比例 <25% 时自动降并发（防 OOM）
   vram_min_free_gb: 1.0              # 可用显存 <1GB 时自动降并发（防 OOM）
   interval_seconds: 2                # 采样间隔（秒）
+
+inspector:                           # 上游自检巡检（异常只告警；唯一主动处置是「上游丢弃 prompt」）
+  enabled: true
+  interval: 10                       # 巡检周期（秒）
+  slow_factor: 3.0                   # 耗时 > 同类成功任务 P95 × 此系数 → 标红告警
+  slow_min_seconds: 60               # 基线阈值下限（秒），历史样本不足时兜底
+  stall_seconds: 240                 # 上游在跑但这么久没有任何进度事件 → 疑似卡住（告警）
+  history_hours: 24                  # 计算耗时基线用的历史窗口
+  baseline_ttl: 300                  # 耗时基线缓存有效期（秒）
+  system_stats_every: 3              # 每 N 轮巡检查一次上游 /system_stats（显存水位）

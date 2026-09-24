@@ -185,9 +185,30 @@ Query：`filename`、`subfolder`、`type`（通常 `type=output`）。响应为�
   "queue_length": 2,
   "running": 1,
   "max_concurrent": 3,
-  "sample_rate": 24000
+  "sample_rate": 24000,
+  "self_check": { "level": "warn", "count": 1, "items": [ /* 见 3.9 */ ] }
 }
 ```
+
+### 3.1.1 上游自检（inspector）
+
+中转站每 `inspector.interval`（默认 10s）核对一次「调度器认为在跑的任务」与「真实上游」，
+把异常写进日志、`/health`、`/monitor` 与 WebSocket，并标在对应任务上
+（`tasks[].anomaly = {level, code, msg, ts}`，WebUI 会标红）。
+
+| code | level | 含义 | 是否主动处置 |
+| --- | --- | --- | --- |
+| `lost` | error | prompt 既不在上游 `/queue` 也不在 `/history`（上游重启/OOM 崩溃丢弃） | **是**：终结任务并释放单飞槽位 |
+| `slow` | warn | 耗时超过同类成功任务 P95 × `inspector.slow_factor`（下限 `slow_min_seconds`） | 否，仅告警 |
+| `stalled` | warn | 上游在跑但 `inspector.stall_seconds` 内没有任何进度事件（需 `/ws` 订阅在线） | 否，仅告警 |
+| `slot_wait` | warn | 等待单飞槽位过久（通常意味着上一个任务卡住） | 否 |
+| `upstream_external` | info | 上游有非本站已知任务在跑/排队（网页端提交或重启前遗留），说明资源被占用 | 否 |
+| `upstream_vram_low` | warn | 上游显存可用低于 `monitoring.vram_min_free_gb` | 否（调度器会降并发） |
+| `upstream_unreachable` | error | 上游 `/queue` 不可达（进程退出？） | 否 |
+| `tts_not_ready` | warn | CosyVoice 后端未就绪，语音会 503 | 否 |
+
+判据来源：`GET /queue`（在不在上游手里）、`GET /history/{pid}`（是否已出图）、
+`/ws` 事件（是否真的在往前算）、`GET /system_stats`（上游显存）、本站 SQLite 历史耗时基线。
 
 ### 3.2 `GET /monitor` — 实时资源快照
 
@@ -210,6 +231,7 @@ Query：`filename`、`subfolder`、`type`（通常 `type=output`）。响应为�
 ```
 
 > `effective_concurrent` 为 GPU 过载时降并发后的有效值；`gpu_load > gpu_threshold` 时自动降为 `max(1, max_concurrent*0.5)`。
+> `/monitor` 同样返回 `self_check`（WebUI 顶部「自检」徽标与工具提示用它）。
 
 ### 3.3 `GET /stats?hours=24` — 历史统计（SQLite）
 
@@ -232,14 +254,30 @@ Query：`filename`、`subfolder`、`type`（通常 `type=output`）。响应为�
   "gpu_threshold": 0.8, "gpu_load": 0.11,
   "total_queued": 123, "total_completed": 120,
   "tasks": [ { "task_id": "tts_xxx", "task_type": "tts", "priority": 0,
-               "status": "running", "status_code": 200, "error": "",
-               "created_at": 1786033708.8, "started_at": 1786033709.0,
-               "finished_at": null, "queue_seconds": 0.2, "run_seconds": 1.5,
-               "resource_weight": 1.0, "estimated_duration": 30.0 } ]
+              "status": "running", "status_code": 200, "error": "",
+              "created_at": 1786033708.8, "started_at": 1786033709.0,
+              "finished_at": null, "queue_seconds": 0.2, "run_seconds": 1.5,
+              "resource_weight": 1.0, "estimated_duration": 30.0,
+              "progress": {}, "anomaly": null } ]
 }
 ```
 
 任务状态：`queued`（排队中）/ `waiting`（等待单飞槽位）/ `running`（运行中）/ `done`（完成）/ `failed`（失败）/ `timeout`（超时）/ `cancelled`（已取消）。
+
+`progress`（仅绘图任务、需 `/ws` 订阅在线）：`{nodes_done, nodes_total, node, step, step_total, state, updated_at}`
+—— 来自真实 ComfyUI 的 `progress_state` / `progress` / `executing` / `executed` 事件，最多每秒推送一次。
+`anomaly`：自检异常标记（见 3.1.1），只在 WebSocket `task_update` 里实时推送，不落库。
+
+### 3.4.1 `GET /self-check` — 自检详情
+
+返回 `{level, count, items[], last_run, cycles, probe, progress_stream}`：
+`probe` 是最近一次上游探测快照（`reachable` / `running[]` / `pending[]` / `vram_free_gb`），
+`progress_stream` 是 `/ws` 订阅状态（`connected` / `last_event_ago` / `queue_remaining`）。
+
+### 3.4.2 `POST /self-check/run` — 手动触发一次自检
+
+排查用，不用等下一个巡检周期；返回同上结构。
+
 
 ### 3.5 `GET /tasks` — 全部任务（分页 + 筛选，查 SQLite 历史）
 
@@ -270,7 +308,7 @@ Query 参数：
 
 ### 3.8 `GET /config` — 当前生效配置（只读）
 
-返回 `server` / `tts` / `comfyui` / `monitoring` 四组配置摘要与运行时值（含探测后的真实 `sample_rate`）。修改请编辑 `middle-station.yaml` 后重启。
+返回 `server` / `tts` / `comfyui` / `monitoring` / `inspector` 五组配置摘要与运行时值（含探测后的真实 `sample_rate`、提交给真实 ComfyUI 的 `client_id`）。修改请编辑 `middle-station.yaml` 后重启。
 
 ---
 
