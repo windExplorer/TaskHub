@@ -44,8 +44,10 @@ class ServerConfig:
     host: str = '0.0.0.0'
     port: int = 9000
     max_concurrent: int = 3
+    # 硬约束：queue_wait + infer_timeout ≤ 调用方读超时 − 10s 余量
+    # （AstrBot 语音插件默认 150s → 两者之和保持 ≤ 140，否则插件先断连、音频白算）
     queue_wait: int = 30          # 入队等待超时（秒），超时回 429
-    infer_timeout: int = 120      # 单次推理超时（秒），超时回 504
+    infer_timeout: int = 110      # 单次推理超时（秒），超时回 504
     db_path: str = './middle-station.db'
     log_max_lines: int = 100
     frontend_dir: str = './frontend'

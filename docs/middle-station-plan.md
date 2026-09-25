@@ -131,8 +131,8 @@ server:
  host: 0.0.0.0
  port: 9000
  max_concurrent: 3
- queue_timeout: 30
- infer_timeout: 120
+ queue_wait: 30
+ infer_timeout: 110
  db_path: \./middle-station.db\
 tts:
  base_url: \http://127.0.0.1:50002\ # 插件配置指向
@@ -214,7 +214,7 @@ uv run python main.py start                    # 默认 0.0.0.0:9000
 ```
 
 插件侧零改动：AstrBot 插件 `base_url` / `comfyui_servers[].url` 指向本中转站即可。
-超时调配注意：`server.queue_wait + server.infer_timeout <= 插件 timeout(150s)`，默认 30+120 刚好覆盖；若调大中转站超时，需同步调大插件 `timeout`。
+超时调配注意：`server.queue_wait + server.infer_timeout ≤ 插件 timeout(150s) − 10s 余量`（当前 30+110=140，见 `docs/middle-station-integration.md` §6）；若调大中转站超时，需同步调大插件 `timeout`，否则插件先断连会白算一次合成。
 
 ### 10.1 接口核对清单（对照 docs/backend-api.md §7.5）
 

@@ -345,8 +345,8 @@ Query 参数：
 
 | 配置项 | 默认 | 影响的接口/行为 |
 | --- | --- | --- |
-| `server.queue_wait` | 120 | 排队等待超时 → `429`（TTS 等走 `submit()` 的接口） |
-| `server.infer_timeout` | 120 | 推理超时 → `504` |
+| `server.queue_wait` | 30 | 排队等待超时 → `429`（TTS 等走 `submit()` 的接口） |
+| `server.infer_timeout` | 110 | 推理超时 → `504`。两者之和须 ≤ 调用方读超时 − 10s（语音插件 150s → 140s），否则插件先断连、音频白算 |
 | `server.max_concurrent` | 1 | 全局并发；GPU/显存过载时自动降半，见 `/monitor.effective_concurrent` |
 | `comfyui.serialize_concurrent` | 1 | `/prompt` 单飞放行数 |
 | `comfyui.watch_interval` | 2 | `_watch` 轮询真实 `/history` 间隔 |
