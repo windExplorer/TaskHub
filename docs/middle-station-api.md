@@ -263,11 +263,25 @@ Query：`filename`、`subfolder`、`type`（通常 `type=output`）。响应为�
 
 | 分组 | 数据来源 | 内容 |
 | --- | --- | --- |
-| `host` | 本机 NVML + psutil | 主机名/系统/开机时长、CPU 型号·核数·频率·占用、内存、服务所在磁盘、本进程 RSS/线程、**每张显卡**的型号/利用率/显存/温度/功耗上限/风扇/频率、驱动版本 |
+| `host` | 本机 NVML + psutil + 注册表 | 主机名、**系统版本详情**、开机/服务运行时长、CPU 型号·核数·频率·占用、内存、服务所在磁盘、本进程 RSS/线程、**每张显卡**的型号/利用率/显存/温度/功耗上限/风扇/频率、驱动版本 |
+| `host.os` | 注册表 + `platform` | `caption`（如 `Windows 11 专业工作站版`）、`edition`/`edition_id`、`display_version`（如 `25H2`）、`build`/`ubr`、`version`（完整 `10.0.26200.9550`）、`arch`、`kernel`、`install_time`、`python` |
+| `host.thermal` / `host.fans` | LHM/OHM 的 WMI 命名空间，退化到 ACPI 性能计数器 | CPU 封装/每核温度、主板温度、机箱风扇 RPM；GPU 温度/风扇见 `host.gpus[]`。**读不到时字段为 `null`/`[]` 并带 `note` 说明原因**（见下方说明） |
 | `upstreams.comfyui` | `GET /queue` + `GET /system_stats` | 是否可达、执行中/排队 prompt、`queue_remaining`（取自 `/ws`）、`/ws` 订阅状态、ComfyUI 版本·OS·Python·PyTorch·上游内存、上游各设备显存与 torch 占用 |
 | `upstreams.cosyvoice` | `GET /` | 是否可达、`model_loaded`、真实 `sample_rate`、音色数、参考音频目录、探测时间、上游自述信息 |
 | `scheduler` | 内存 | 队列长度、运行中、有效并发、降级原因、累计入队/完成 |
 | `self_check` | 自检巡检 | 同 3.1.1（`level`/`count`/`items`） |
+
+> **CPU 温度 / 机箱风扇为什么可能是 `null`**：Windows 读 CPU 封装温度必须走 Ring0 驱动，
+> 纯 Python + WMI 只能拿到 ACPI 热区（`Win32_PerfFormattedData_Counters_ThermalZoneInformation`，
+> 台式机上通常反映主板/PCH，不是 CPU 核心；`MSAcpi_ThermalZoneTemperature` 在多数主板上直接不可用，
+> `Win32_Fan` 也不给转速）。所以：
+> - **装了** LibreHardwareMonitor（或 OpenHardwareMonitor / HWiNFO，启用 WMI provider）→ 自动读到
+>   CPU Package / 每核温度 / 主板温度 / 机箱风扇 RPM，`thermal.source` 为 `librehardwaremonitor`；
+> - **没装** → `thermal.cpu_package_c: null`、`fans.system: []`，`acpi_zones_c` 里通常还有一个热区温度，
+>   `note` 写明原因。中转站不会编造数值。
+> - Linux/BSD 上走 psutil 的 `sensors_temperatures()`/`sensors_fans()`（`source: psutil`）。
+>
+> 探测要起一次 PowerShell 子进程（约 0.3s），因此结果缓存 15s；首次 `/device` 约 0.8s，之后 <50ms。
 
 - 任一上游不可达只体现为 `reachable: false`（并带 `system_stats_ok: false`），接口本身**仍返回 200**，
   不会因为上游挂了而超时或失败；本机与另一个上游的数据照常返回。

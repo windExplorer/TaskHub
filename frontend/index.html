@@ -698,18 +698,49 @@ function gpuBlock(g) {
 function hostPane(h) {
   const cpu = h.cpu || {}, ram = h.ram || {}, disk = h.disk || {}, proc = h.process || {};
   const gpus = h.gpus || [];
+  // 系统版本详情（老响应可能是字符串，兼容一下）
+  const os = (h.os && typeof h.os === 'object') ? h.os : { caption: h.os };
+  const osTitle = [
+    os.version ? `版本 ${os.version}` : null,
+    os.display_version ? `功能更新 ${os.display_version}` : null,
+    os.build ? `内部版本 ${os.build}` : null,
+    os.arch || null,
+    os.install_time ? `安装于 ${fmtTime(os.install_time)}` : null,
+  ].filter(Boolean).join(' · ');
+  // CPU 温度 / 机箱风扇：Windows 上没有免驱来源，拿不到就据实显示原因
+  const th = h.thermal || {}, fans = h.fans || {};
+  const cores = th.cpu_cores_c || {};
+  const coreNames = Object.keys(cores);
+  const acpi = Object.entries(th.acpi_zones_c || {}).map(([k, v]) => `${k} ${v}°C`).join(' / ');
+  let cpuTemp = th.cpu_package_c !== null && th.cpu_package_c !== undefined
+    ? `${fmt(th.cpu_package_c, 0)}°C` : null;
+  if (!cpuTemp && coreNames.length) {
+    cpuTemp = `${fmt(Math.max(...coreNames.map((k) => cores[k])), 0)}°C`;
+  }
+  if (!cpuTemp) cpuTemp = acpi ? `不可用（ACPI 热区 ${acpi}）` : '不可用';
+  const cpuTempTitle = [
+    th.cpu_package_c !== null && th.cpu_package_c !== undefined ? `CPU Package ${fmt(th.cpu_package_c, 0)}°C` : null,
+    ...coreNames.map((k) => `${k} ${cores[k]}°C`),
+    ...Object.entries(th.other_c || {}).map(([k, v]) => `${k} ${v}°C`),
+    acpi ? `ACPI 热区：${acpi}` : null,
+    th.source ? `来源：${th.source}` : null,
+    th.note || null,
+  ].filter(Boolean).join('\n');
+  const sysFans = (fans.system || []).map((f) => `${f.name} ${f.rpm}RPM`).join(' · ') || '不可用';
   return `<div class="rounded-xl p-3" style="background:var(--chip)">
     ${cardTitle('本机', h.hostname || '')}
-    ${kv('系统', h.os)}
+    ${kv('系统', esc(os.caption || os.name || '–'), osTitle)}
     ${kv('服务运行', fmtUptime(h.service_uptime_s), `主机已运行 ${fmtUptime(h.host_uptime_s)}`)}
     <div class="mt-2 pt-2" style="border-top:1px dashed var(--border)">
       ${kv('CPU', `${fmt(cpu.percent, 0)}%`, `${cpu.model || ''}（${cpu.cores_physical || '?'}C/${cpu.cores_logical || '?'}T${cpu.current_mhz ? ` · ${cpu.current_mhz}MHz` : ''}）`)}
       ${bar(cpu.percent, (cpu.percent || 0) > 85 ? '#fb7185' : '#38bdf8')}
       <div class="text-[10px] text-dim truncate">${esc(cpu.model || '')}</div>
+      ${kv('CPU 温度', cpuTemp, cpuTempTitle)}
       ${kv('内存', `${fmt(ram.used_gb, 1)} / ${fmt(ram.total_gb, 1)} GB`)}
       ${bar(ram.percent, (ram.percent || 0) > 85 ? '#fb7185' : '#34d399')}
       ${disk.total_gb ? kv('磁盘(' + (disk.path || '.') + ')', `剩 ${fmt(disk.free_gb, 1)} / ${fmt(disk.total_gb, 1)} GB`) : ''}
       ${disk.total_gb ? bar(disk.percent, (disk.percent || 0) > 90 ? '#fb7185' : '#a1a1aa') : ''}
+      ${kv('机箱风扇', sysFans, fans.note)}
       ${kv('本进程', proc.pid ? `pid ${proc.pid} · ${fmt(proc.rss_gb, 2)}GB · ${proc.threads} 线程` : '–')}
     </div>
     ${h.nvidia_ok === false ? `<div class="mt-2 text-[11px]" style="color:var(--st-timeout-fg)">未检测到 NVIDIA GPU（NVML 不可用）</div>` : ''}

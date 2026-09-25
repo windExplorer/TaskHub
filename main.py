@@ -203,7 +203,7 @@ async def _device_status(raw: bool = False) -> Dict:
     - CosyVoice：`GET /`（健康检查，含真实采样率与 model_loaded）
     上游任何一个挂了都只是 `reachable: false`，不影响本机和另一个上游的数据。
     """
-    host = monitor.device_status()
+    host = await monitor.device_status()
     comfy_probe, comfy_stats, cosy_probe = await asyncio.gather(
         comfy.upstream_probe(timeout=3.0),
         comfy.system_stats(timeout=3.0),
