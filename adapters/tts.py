@@ -44,6 +44,7 @@ class TTSAdapter:
         self.base_url = cfg.tts.base_url.rstrip('/')
         self.sample_rate = cfg.tts.sample_rate
         self.model_loaded = True
+        self.last_probe_ts: float = 0.0
         self.voices: Dict[str, str] = dict(cfg.tts.voices or {})
         self.voices_dir = cfg.tts.voices_dir
         self.voices_json = cfg.tts.voices_json
@@ -84,10 +85,13 @@ class TTSAdapter:
 
     # ---------- 探测 / 健康检查 ----------
 
-    async def probe(self) -> Optional[Dict]:
-        """GET /：拉取后端真实采样率，覆盖本地配置（否则音调会变）。"""
+    async def probe(self, timeout: float = 10.0) -> Optional[Dict]:
+        """GET /：拉取后端真实采样率，覆盖本地配置（否则音调会变）。
+
+        同时刷新 model_loaded（`GET /device` 会带较短 timeout 主动探一次）。
+        """
         try:
-            r = await self._client.get(f'{self.base_url}/', timeout=10.0)
+            r = await self._client.get(f'{self.base_url}/', timeout=timeout)
             if r.status_code == 200:
                 data = r.json()
                 sr = data.get('sample_rate')
@@ -97,12 +101,25 @@ class TTSAdapter:
                         logger.info('backend sample_rate %s (was %s), overriding', sr, self.sample_rate)
                     self.sample_rate = sr
                 self.model_loaded = bool(data.get('model_loaded', True))
+                self.last_probe_ts = time.time()
                 return data
             self.model_loaded = False
         except Exception as e:  # noqa: BLE001
             self.model_loaded = False
             logger.warning('backend probe failed (%s): %s', self.base_url, e)
+        self.last_probe_ts = time.time()
         return None
+
+    def status(self) -> Dict:
+        """后端状态摘要（供 GET /device 的 upstreams.cosyvoice）。"""
+        return {
+            'base_url': self.base_url,
+            'model_loaded': self.model_loaded,
+            'sample_rate': self.sample_rate,
+            'voices': len(self.voices),
+            'voices_dir': self.voices_dir,
+            'last_probe_ts': self.last_probe_ts,
+        }
 
     async def start(self):
         await self.probe()

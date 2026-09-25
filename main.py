@@ -195,6 +195,96 @@ def _self_check() -> Dict:
     return inspector.summary()
 
 
+async def _device_status(raw: bool = False) -> Dict:
+    """聚合「本机 + 上游后端 + 调度」的当前状态（GET /device）。
+
+    「上游聚合」= 中转站自己作为客户端，把真实后端的设备/健康信息一次问全并归一化后返回：
+    - ComfyUI：`GET /queue`（在跑什么）+ `GET /system_stats`（OS/Python/PyTorch/版本/上游自身显存）
+    - CosyVoice：`GET /`（健康检查，含真实采样率与 model_loaded）
+    上游任何一个挂了都只是 `reachable: false`，不影响本机和另一个上游的数据。
+    """
+    host = monitor.device_status()
+    comfy_probe, comfy_stats, cosy_probe = await asyncio.gather(
+        comfy.upstream_probe(timeout=3.0),
+        comfy.system_stats(timeout=3.0),
+        tts.probe(timeout=3.0),
+        return_exceptions=True,
+    )
+    if isinstance(comfy_probe, BaseException):
+        comfy_probe = {'reachable': False, 'running': set(), 'pending': set(),
+                       'vram_free_gb': None, 'vram_total_gb': None}
+    if isinstance(comfy_stats, BaseException):
+        comfy_stats = None
+    if isinstance(cosy_probe, BaseException):
+        cosy_probe = None
+
+    sys_info: Dict = {}
+    dev_info: list = []
+    if isinstance(comfy_stats, dict):
+        s = comfy_stats.get('system') or {}
+        sys_info = {
+            'comfyui_version': s.get('comfyui_version'),
+            'os': s.get('os'),
+            'python': s.get('python_version'),
+            'pytorch': s.get('pytorch_version'),
+            'ram_total_gb': round((s.get('ram_total') or 0) / (1024 ** 3), 2) or None,
+            'ram_free_gb': round((s.get('ram_free') or 0) / (1024 ** 3), 2) or None,
+            'argv': s.get('argv'),
+        }
+        for d in (comfy_stats.get('devices') or []):
+            dev_info.append({
+                'name': d.get('name'),
+                'type': d.get('type'),
+                'vram_total_gb': round((d.get('vram_total') or 0) / (1024 ** 3), 2) or None,
+                'vram_free_gb': round((d.get('vram_free') or 0) / (1024 ** 3), 2) or None,
+                'torch_vram_total_gb': round((d.get('torch_vram_total') or 0) / (1024 ** 3), 3) or None,
+                'torch_vram_free_gb': round((d.get('torch_vram_free') or 0) / (1024 ** 3), 3) or None,
+            })
+
+    stream = comfy.progress_snapshot()
+    comfy_info = {
+        'base_url': cfg.comfyui.base_url,
+        'reachable': bool(comfy_probe.get('reachable')),
+        'system_stats_ok': isinstance(comfy_stats, dict),
+        'client_id': comfy.client_id,
+        'queue': {
+            'running': sorted(comfy_probe.get('running') or []),
+            'pending': sorted(comfy_probe.get('pending') or []),
+            # 上游自己的口径（来自 /ws 的 status 广播；未订阅时为空）
+            'queue_remaining': (stream or {}).get('queue_remaining'),
+        },
+        'progress_stream': stream,
+        'system': sys_info,
+        'devices': dev_info,
+    }
+    if raw and isinstance(comfy_stats, dict):
+        comfy_info['raw_system_stats'] = comfy_stats
+
+    cosy_status = tts.status()
+    cosy_info = {
+        **cosy_status,
+        'reachable': isinstance(cosy_probe, dict),
+        'info': cosy_probe if isinstance(cosy_probe, dict) else None,
+    }
+
+    st = scheduler.get_status(limit=0)
+    return {
+        'ts': time.time(),
+        'host': host,
+        'upstreams': {'comfyui': comfy_info, 'cosyvoice': cosy_info},
+        'scheduler': {
+            'queue_length': st['queue_length'],
+            'running': st['running'],
+            'max_concurrent': st['max_concurrent'],
+            'effective_concurrent': st['effective_concurrent'],
+            'throttle_reason': st['throttle_reason'],
+            'total_queued': st['total_queued'],
+            'total_completed': st['total_completed'],
+        },
+        'self_check': _self_check(),
+    }
+
+
 # ============================================================================
 # 提交辅助
 # ============================================================================
@@ -274,6 +364,16 @@ def _register_routes(app: FastAPI):
             'throttle_reason': st['throttle_reason'],
             'self_check': _self_check(),
         }
+
+    @app.get('/device')
+    async def device_api(raw: int = 0):
+        """当前设备状态：本机（CPU/内存/磁盘/进程/每张显卡）+ 上游（ComfyUI / CosyVoice）+ 调度概况。
+
+        - 即时采样：不等 monitor 的 2s 周期；每次只向上游各发 1~2 个只读请求。
+        - 上游不可达时只体现为 `reachable: false`，接口本身仍 200，不会变慢或失败。
+        - `?raw=1` 额外带上真实 ComfyUI `/system_stats` 的原始 JSON（排障用）。
+        """
+        return await _device_status(bool(raw))
 
     @app.get('/self-check')
     async def self_check_api():

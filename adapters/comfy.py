@@ -388,6 +388,27 @@ class ComfyAdapter:
                 pass
         return out
 
+    async def system_stats(self, timeout: float = 3.0) -> Optional[Dict]:
+        """GET /system_stats：上游自身的 OS / Python / PyTorch / ComfyUI 版本 + 各设备显存。
+
+        `GET /device` 用它展示「ComfyUI 服务器状态」；失败返回 None（不抛错，不影响调用方）。
+        """
+        try:
+            r = await self._client.get(f'{self.base_url}/system_stats', timeout=timeout)
+        except httpx.RequestError:
+            return None
+        if r.status_code != 200:
+            return None
+        try:
+            data = r.json()
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def progress_snapshot(self) -> Optional[Dict]:
+        """实时进度订阅状态（供 /device、自检展示）。"""
+        return self.progress_stream.snapshot() if self.progress_stream else None
+
     def watching(self) -> Dict[str, Dict]:
         """当前被中转站跟踪的所有真实 prompt（real_pid -> 进度/任务信息），供自检核对。"""
         out: Dict[str, Dict] = {}

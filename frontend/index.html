@@ -195,6 +195,23 @@
     </div>
   </div>
 
+  <!-- Devices -->
+  <div class="rounded-2xl bg-card border border-card mb-8">
+    <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between px-5 py-4 border-b border-card">
+      <div class="flex items-center gap-2">
+        <h2 class="text-sm font-medium text-sub">设备状态</h2>
+        <span class="text-[11px] text-dim">本机 + 上游后端（每 10s 自动刷新）</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span id="device-ts" class="text-[11px] text-dim">加载中…</span>
+        <button id="btn-device-refresh" class="text-xs px-2.5 py-1 rounded-full bg-hover border border-card text-mute hover:text-main">刷新</button>
+      </div>
+    </div>
+    <div id="device-grid" class="grid grid-cols-1 lg:grid-cols-3 gap-4 p-5">
+      <div class="text-dim text-xs">加载中…</div>
+    </div>
+  </div>
+
   <!-- Tasks -->
   <div class="rounded-2xl bg-card border border-card mb-8">
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-5 py-4 border-b border-card">
@@ -630,6 +647,134 @@ function connectLogs() {
   ws.onclose = () => setTimeout(connectLogs, 3000);
 }
 
+// ---------- 设备状态（GET /device：本机 + 上游后端） ----------
+function fmtUptime(s) {
+  if (!s && s !== 0) return '–';
+  s = Math.max(0, Math.round(s));
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  if (d) return `${d}天${h}小时`;
+  if (h) return `${h}小时${m}分`;
+  if (m) return `${m}分${s % 60}秒`;
+  return `${s}秒`;
+}
+function bar(pct, color) {
+  const p = Math.max(0, Math.min(100, Number(pct) || 0));
+  return `<div class="bar mt-1" style="height:4px"><div style="width:${p}%; background:${color}"></div></div>`;
+}
+function kv(label, value, title) {
+  return `<div class="flex items-center justify-between gap-2 border-b border-card py-1">
+    <span class="text-dim shrink-0">${label}</span>
+    <span class="mono text-[11px] text-sub text-right truncate" title="${esc(title || value)}">${value === null || value === undefined || value === '' ? '–' : value}</span>
+  </div>`;
+}
+function dot(ok, text) {
+  const fg = ok ? '#34d399' : '#fb7185';
+  return `<span class="inline-flex items-center gap-1.5 text-[11px]" style="color:${fg}">
+    <span class="w-1.5 h-1.5 rounded-full" style="background:${fg}"></span>${text}</span>`;
+}
+function cardTitle(text, right) {
+  return `<div class="flex items-center justify-between mb-2">
+    <span class="text-xs font-semibold uppercase tracking-wider" style="color:var(--accent)">${text}</span>
+    <span class="text-[11px] text-dim">${right || ''}</span>
+  </div>`;
+}
+function gpuBlock(g) {
+  const utilCol = (g.util_percent || 0) > 80 ? '#fb7185' : '#8b5cf6';
+  const memCol = (g.mem_percent || 0) > 90 ? '#fb7185' : '#38bdf8';
+  const ext = [
+    g.temperature_c !== undefined ? `温度 ${g.temperature_c}°C` : null,
+    g.power_w !== undefined ? `功耗 ${g.power_w}${g.power_limit_w ? '/' + g.power_limit_w : ''}W` : null,
+    g.fan_percent !== undefined ? `风扇 ${g.fan_percent}%` : null,
+  ].filter(Boolean).join(' · ');
+  return `<div class="mt-2 pt-2" style="border-top:1px dashed var(--border)">
+    <div class="text-[11px] text-sub truncate" title="${esc(g.name)}">#${g.index} ${g.name || 'GPU'}</div>
+    <div class="flex justify-between text-[11px] text-dim mt-1"><span>算力</span><span class="mono">${fmt(g.util_percent, 0)}%</span></div>
+    ${bar(g.util_percent, utilCol)}
+    <div class="flex justify-between text-[11px] text-dim mt-1"><span>显存</span><span class="mono">${fmt(g.mem_used_gb, 1)} / ${fmt(g.mem_total_gb, 1)} GB</span></div>
+    ${bar(g.mem_percent, memCol)}
+    ${ext ? `<div class="text-[11px] text-dim mt-1 mono">${ext}${g.clock_mhz ? ` · ${g.clock_mhz}MHz` : ''}</div>` : ''}
+  </div>`;
+}
+function hostPane(h) {
+  const cpu = h.cpu || {}, ram = h.ram || {}, disk = h.disk || {}, proc = h.process || {};
+  const gpus = h.gpus || [];
+  return `<div class="rounded-xl p-3" style="background:var(--chip)">
+    ${cardTitle('本机', h.hostname || '')}
+    ${kv('系统', h.os)}
+    ${kv('服务运行', fmtUptime(h.service_uptime_s), `主机已运行 ${fmtUptime(h.host_uptime_s)}`)}
+    <div class="mt-2 pt-2" style="border-top:1px dashed var(--border)">
+      ${kv('CPU', `${fmt(cpu.percent, 0)}%`, `${cpu.model || ''}（${cpu.cores_physical || '?'}C/${cpu.cores_logical || '?'}T${cpu.current_mhz ? ` · ${cpu.current_mhz}MHz` : ''}）`)}
+      ${bar(cpu.percent, (cpu.percent || 0) > 85 ? '#fb7185' : '#38bdf8')}
+      <div class="text-[10px] text-dim truncate">${esc(cpu.model || '')}</div>
+      ${kv('内存', `${fmt(ram.used_gb, 1)} / ${fmt(ram.total_gb, 1)} GB`)}
+      ${bar(ram.percent, (ram.percent || 0) > 85 ? '#fb7185' : '#34d399')}
+      ${disk.total_gb ? kv('磁盘(' + (disk.path || '.') + ')', `剩 ${fmt(disk.free_gb, 1)} / ${fmt(disk.total_gb, 1)} GB`) : ''}
+      ${disk.total_gb ? bar(disk.percent, (disk.percent || 0) > 90 ? '#fb7185' : '#a1a1aa') : ''}
+      ${kv('本进程', proc.pid ? `pid ${proc.pid} · ${fmt(proc.rss_gb, 2)}GB · ${proc.threads} 线程` : '–')}
+    </div>
+    ${h.nvidia_ok === false ? `<div class="mt-2 text-[11px]" style="color:var(--st-timeout-fg)">未检测到 NVIDIA GPU（NVML 不可用）</div>` : ''}
+    ${gpus.map(gpuBlock).join('')}
+    ${gpus.length ? `<div class="text-[10px] text-dim mt-1">驱动 ${esc(h.driver_version || '?')}</div>` : ''}
+  </div>`;
+}
+function comfyPane(c) {
+  const q = c.queue || {}, sys = c.system || {}, st = c.progress_stream || {};
+  const devs = (c.devices || []).map((d) => {
+    const used = (d.vram_total_gb || 0) - (d.vram_free_gb || 0);
+    const pct = d.vram_total_gb ? used / d.vram_total_gb * 100 : 0;
+    return `<div class="mt-2 pt-2" style="border-top:1px dashed var(--border)">
+      <div class="text-[11px] text-sub truncate" title="${esc(d.name)}">${esc(d.name || 'device')}</div>
+      <div class="flex justify-between text-[11px] text-dim mt-1"><span>显存可用</span><span class="mono">${fmt(d.vram_free_gb, 2)} / ${fmt(d.vram_total_gb, 1)} GB</span></div>
+      ${bar(pct, pct > 90 ? '#fb7185' : '#38bdf8')}
+      ${kv('torch 已分配', `${fmt(d.torch_vram_total_gb, 2)} GB（缓存 ${fmt(d.torch_vram_free_gb, 2)}GB）`)}
+    </div>`;
+  }).join('');
+  return `<div class="rounded-xl p-3" style="background:var(--chip)">
+    ${cardTitle('ComfyUI')}
+    <div class="mb-1">${dot(c.reachable, c.reachable ? '可访问' : '不可访问')}</div>
+    ${kv('地址', c.base_url)}
+    ${kv('队列', `执行中 ${(q.running || []).length} · 排队 ${(q.pending || []).length}`,
+         `queue_remaining=${q.queue_remaining === null || q.queue_remaining === undefined ? '?' : q.queue_remaining}`)}
+    ${st ? kv('进度订阅', st.connected ? `已连接（事件 ${st.last_event_ago === null ? '–' : st.last_event_ago + 's 前'}）` : '未连接',
+              `${st.last_event_type || ''}｜errors=${st.errors}`) : ''}
+    ${sys.comfyui_version ? `<div class="mt-2 pt-2" style="border-top:1px dashed var(--border)">
+      ${kv('版本', `ComfyUI ${sys.comfyui_version}`)}
+      ${kv('运行环境', `Python ${sys.python || '?'} · torch ${sys.pytorch || '?'}`)}
+      ${kv('上游系统', `${sys.os || '?'} · 内存可用 ${fmt(sys.ram_free_gb, 1)}/${fmt(sys.ram_total_gb, 1)}GB`)}
+    </div>` : `<div class="mt-2 text-[11px] text-dim">/system_stats 不可用（上游未响应或未开放）</div>`}
+    ${devs}
+  </div>`;
+}
+function cosyPane(c) {
+  const info = c.info || {};
+  return `<div class="rounded-xl p-3" style="background:var(--chip)">
+    ${cardTitle('CosyVoice')}
+    <div class="mb-1">${dot(c.reachable, c.reachable ? '可访问' : '不可访问')}</div>
+    ${kv('地址', c.base_url)}
+    ${kv('模型状态', c.model_loaded ? '已加载' : '未就绪',
+         c.model_loaded ? '' : '语音任务会返回 503')}
+    ${kv('采样率', `${c.sample_rate} Hz`)}
+    ${kv('参考音色', `${c.voices} 个`)}
+    ${kv('参考目录', c.voices_dir || '（未配置）')}
+    ${kv('探测时间', c.last_probe_ts ? fmtTime(c.last_probe_ts) : '–')}
+    ${info && info.status ? kv('上游自述', JSON.stringify(info)) : ''}
+  </div>`;
+}
+async function loadDevice() {
+  try {
+    const r = await fetch('/device');
+    const d = await r.json();
+    const host = d.host || {}, up = d.upstreams || {}, sc = d.scheduler || {};
+    $('device-ts').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`
+      + ` · 调度：队列 ${sc.queue_length} / 运行 ${sc.running}（并发 ${sc.effective_concurrent}）`
+      + (sc.throttle_reason && sc.throttle_reason !== 'normal' ? ` · 降级：${sc.throttle_reason}` : '');
+    $('device-grid').innerHTML = hostPane(host) + comfyPane(up.comfyui || {}) + cosyPane(up.cosyvoice || {});
+  } catch (e) {
+    $('device-grid').innerHTML = `<div class="text-dim text-xs">加载设备状态失败：${esc(e)}</div>`;
+  }
+}
+$('btn-device-refresh').onclick = loadDevice;
+
 // ---------- Stats / Config ----------
 async function loadStats() {
   try {
@@ -713,6 +858,8 @@ connectMonitor();
 connectTasks();
 connectLogs();
 loadStats();
+loadDevice();
+setInterval(loadDevice, 10000);
 </script>
 </body>
 </html>

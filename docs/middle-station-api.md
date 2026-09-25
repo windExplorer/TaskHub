@@ -233,6 +233,25 @@ Query：`filename`、`subfolder`、`type`（通常 `type=output`）。响应为�
 > `effective_concurrent` 为 GPU 过载时降并发后的有效值；`gpu_load > gpu_threshold` 时自动降为 `max(1, max_concurrent*0.5)`。
 > `/monitor` 同样返回 `self_check`（WebUI 顶部「自检」徽标与工具提示用它）。
 
+### 3.2.1 `GET /device?raw=0` — 当前设备状态（本机 + 上游聚合）
+
+即时采样（不等 `/monitor` 的采样周期）。**「上游聚合」** 指中转站自己作为客户端，把真实后端的
+设备/健康信息一次问全并归一化后返回，省得再分别去点 ComfyUI 的 `/system_stats` 和 CosyVoice 的 `/`：
+
+| 分组 | 数据来源 | 内容 |
+| --- | --- | --- |
+| `host` | 本机 NVML + psutil | 主机名/系统/开机时长、CPU 型号·核数·频率·占用、内存、服务所在磁盘、本进程 RSS/线程、**每张显卡**的型号/利用率/显存/温度/功耗上限/风扇/频率、驱动版本 |
+| `upstreams.comfyui` | `GET /queue` + `GET /system_stats` | 是否可达、执行中/排队 prompt、`queue_remaining`（取自 `/ws`）、`/ws` 订阅状态、ComfyUI 版本·OS·Python·PyTorch·上游内存、上游各设备显存与 torch 占用 |
+| `upstreams.cosyvoice` | `GET /` | 是否可达、`model_loaded`、真实 `sample_rate`、音色数、参考音频目录、探测时间、上游自述信息 |
+| `scheduler` | 内存 | 队列长度、运行中、有效并发、降级原因、累计入队/完成 |
+| `self_check` | 自检巡检 | 同 3.1.1（`level`/`count`/`items`） |
+
+- 任一上游不可达只体现为 `reachable: false`（并带 `system_stats_ok: false`），接口本身**仍返回 200**，
+  不会因为上游挂了而超时或失败；本机与另一个上游的数据照常返回。
+- `?raw=1` 时额外返回真实 ComfyUI `/system_stats` 的原始 JSON（`raw_system_stats`），排障用。
+- 动态指标逐项 `try`：老卡或被动散热卡没有风扇转速等字段时会**缺项**而不是报错；
+  多卡是 `host.gpus[]` 数组，`host.gpus[0]` 同时驱动调度器的降并发判断。
+
 ### 3.3 `GET /stats?hours=24` — 历史统计（SQLite）
 
 ```json
