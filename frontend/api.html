@@ -121,6 +121,14 @@ const GROUPS = [
 <li>ComfyUI 任务：<span class="mono text-xs">{ "prompt_id": "32位hex" }</span>。</li>
 <li>时间戳字段：Unix 秒（float）。</li>
 </ul>` },
+    { method: '', path: '运维速查', title: '', raw: `
+<h4>运维速查</h4>
+<ul class="list-disc list-inside text-sm space-y-1 text-sub">
+<li>设备状态（本机 CPU/内存/磁盘/多卡温度功耗 + 上游 ComfyUI/CosyVoice）：<code class="mono text-xs">GET /device</code>，加 <code class="mono text-xs">?raw=1</code> 附上游 <code class="mono text-xs">/system_stats</code> 原始信息。</li>
+<li>任务是不是卡住了 / 上游是不是把 prompt 丢了：<code class="mono text-xs">GET /self-check</code>；想立刻核对不等巡检周期：<code class="mono text-xs">POST /self-check/run</code>。</li>
+<li>每个任务的真实进度（节点 x/总数、采样步数）：<code class="mono text-xs">GET /queue</code> 的 <code class="mono text-xs">tasks[].progress</code>，或订阅 <code class="mono text-xs">WS /ws/tasks</code>。</li>
+<li>三条兜底行为（上层无需处理）：上游丢弃 prompt → 自动终结并释放单飞槽位；出图有单任务硬超时；服务重启后遗留的 running/queued 历史记录自动收敛为终态。</li>
+</ul>` },
   ]},
   { id: 'tts', name: 'TTS 标准接口（语音插件）', desc: '契约来源 docs/backend-api.md，插件零改动对接。', endpoints: [
     { method: 'GET', path: '/', title: '健康检查 + 采样率', note: '插件首次合成前必读，用返回的 sample_rate 覆盖本地配置（否则音调会变）。',
@@ -171,7 +179,7 @@ def synthesize(text, voice="xiaoyu.wav", max_retry=3):
   ]},
   { id: 'comfy', name: 'ComfyUI 标准接口（绘图插件）', desc: '契约来源 docs/comfyui-backend-api.md。/prompt 走单飞调度（同一时刻仅放行 serialize_concurrent 个），其余透传。', endpoints: [
     { method: 'POST', path: '/prompt', title: '提交绘图任务（核心，单飞）',
-      note: '排队中的请求内部阻塞等待槽位（不返回 429），提交成功后立即返回 prompt_id。校验失败透传真实 ComfyUI 状态码（常见 400）。成功响应头含 X-Queue-Position（前方任务数，含运行中）。',
+      note: '排队中的请求内部阻塞等待槽位（不返回 429），提交成功后立即返回 prompt_id（中转站虚拟 pid，插件照旧用它轮询 /history）。校验失败透传真实 ComfyUI 状态码（常见 400）。成功响应头含 X-Queue-Position（前方任务数，含运行中）。转发时会改写 client_id 为中转站固定值（taskhub-xxxxxxxx，原值存 _client_id_original）——因为真实 ComfyUI 的 executing/progress 进度事件只发给「提交该 prompt 的 client」，中转站要用同一个 id 建 /ws 才收得到真实进度；在 ComfyUI 网页端队列里看到 client 是 taskhub-xxxx 属正常现象。以 _ 开头的私有字段不会被转发。',
       body: `{ "prompt": { "4": { "class_type": "CheckpointLoaderSimple", "inputs": {} } },
   "client_id": "astrbot-comfyui-xxxx" }`,
       resp: `{ "prompt_id": "e1f2...32位hex" }` },
@@ -179,7 +187,10 @@ def synthesize(text, voice="xiaoyu.wav", max_retry=3):
       note: 'multipart/form-data：image（文件）、type（固定 input）。中转站保证图片落到真实 ComfyUI 的 input 目录。',
       resp: `{ "name": "photo.png", "subfolder": "", "type": "input" }` },
     { method: 'GET', path: '/history/{prompt_id}', title: '查询单个任务结果',
-      note: '排队中/尚未提交返回 {}（插件持续轮询不会误判完成）；完成后透传真实历史 JSON（含 outputs.images[]）。' },
+      note: '排队中/尚未提交返回 {}（插件持续轮询不会误判完成）；完成后透传真实历史 JSON（含 outputs.images[]）；任务已失败（上游执行报错 / watch_timeout 超时 / prompt 被上游丢弃）时返回**合成错误条目**，插件据此立即结束轮询，不会空转到自己的超时。',
+      resp: `{ "e1f2...": { "outputs": {},
+    "status": { "status_str": "error", "completed": false,
+                "messages": [["execution_error", { "exception_message": "taskhub: ..." }]] } } }` },
     { method: 'GET', path: '/history', title: '全部历史（透传）' },
     { method: 'GET', path: '/view', title: '下载输出图片（透传）',
       note: 'Query：filename、subfolder、type（通常 type=output）。响应为图片二进制。',
@@ -262,7 +273,7 @@ def synthesize(text, voice="xiaoyu.wav", max_retry=3):
   "success_rate": 87.5, "by_type": { "tts": 35, "comfyui": 5 },
   "avg_run_seconds": 0.36 }` },
     { method: 'GET', path: '/queue?limit=100', title: '队列与任务状态',
-      note: '任务状态：queued / running / done / failed / timeout / cancelled。',
+      note: '任务状态：queued / waiting（等单飞槽位）/ running / done / failed / timeout / cancelled。绘图任务带 progress（真实上游进度：{nodes_done, nodes_total, node, step, step_total, state}，需 progress_stream 在线，最多每秒推一次）；任务被自检判异常时带 anomaly（{level, code, msg, ts}），二者只走 WebSocket 实时推送、不落库。',
       resp: `{ "queue_length": 2, "running": 1, "max_concurrent": 3,
   "effective_concurrent": 3, "gpu_threshold": 0.8, "gpu_load": 0.11,
   "total_queued": 123, "total_completed": 120,
@@ -270,7 +281,10 @@ def synthesize(text, voice="xiaoyu.wav", max_retry=3):
                "status": "running", "status_code": 200, "error": "",
                "created_at": 1786033708.8, "started_at": 1786033709.0,
                "finished_at": null, "queue_seconds": 0.2, "run_seconds": 1.5,
-               "resource_weight": 1.0, "estimated_duration": 30.0 } ] }` },
+               "resource_weight": 1.0, "estimated_duration": 30.0,
+               "progress": { "nodes_done": 12, "nodes_total": 28, "node": "9",
+                             "step": 7, "step_total": 20, "state": "running" },
+               "anomaly": null } ] }` },
     { method: 'GET', path: '/tasks', title: '全部任务（分页 + 筛选，查 SQLite 历史）',
       note: '参数：page、page_size(默认20)、task_type(tts/comfyui)、status(queued/waiting/running/done/failed/timeout/cancelled)、keyword(模糊搜索)。任务记录持久化，重启不丢；请求参数存档在 task_payloads 表。',
       resp: `{ "total": 40, "page": 1, "page_size": 20, "pages": 2,
@@ -282,18 +296,20 @@ def synthesize(text, voice="xiaoyu.wav", max_retry=3):
       note: '不存在或非排队返回 404。',
       resp: `{ "ok": true, "task_id": "tts_xxx" }` },
     { method: 'GET', path: '/config', title: '当前生效配置（只读）',
-      note: '返回 server / tts / comfyui / monitoring 配置摘要与运行时值（含探测后的真实 sample_rate）。修改请编辑 middle-station.yaml 后重启。' },
+      note: '返回 server / tts / comfyui / monitoring / inspector 五组配置摘要与运行时值（含探测后的真实 sample_rate、提交给真实 ComfyUI 的 client_id）。与接口行为强相关的项：queue_wait(429 阈值)、infer_timeout(504 阈值)、comfyui.watch_timeout(单任务出图硬超时)、comfyui.watch_lost_grace/confirm(丢失判定)、comfyui.progress_stream、inspector.*(自检阈值)。修改请编辑 middle-station.yaml 后重启。' },
   ]},
   { id: 'ws', name: 'WebSocket 实时推送', endpoints: [
     { method: 'WS', path: '/ws/monitor', title: '资源监控（每秒一帧）',
+      note: '字段同 GET /monitor（含 self_check）。更完整的设备信息（型号/温度/功耗/上游状态）请用 GET /device，不在这里每秒推送。',
       resp: `{ "cpu_percent": 12.7, "ram_available_gb": 11.88, "gpu_load": 0.15,
   "gpu_free_gb": 6.43, "gpu_total_gb": 8.0, "gpu_threshold": 0.8,
   "queue_length": 0, "running": 0, "max_concurrent": 3,
-  "effective_concurrent": 3, "ts": 1786033736.9 }` },
+  "effective_concurrent": 3, "ts": 1786033736.9,
+  "self_check": { "level": "ok", "count": 0, "items": [] } }` },
     { method: 'WS', path: '/ws/tasks', title: '任务事件',
-      note: '连接后先发全量 init，之后状态变更推 task_update，空闲每 15s 发 ping 保活。',
+      note: '连接后先发全量 init，之后推 task_update，空闲每 15s 发 ping 保活。task_update 有两种来源、格式相同：①状态变更（入队/开始/等待槽位/完成/失败/超时/取消，会落库）；②实时更新（真实进度 progress、自检异常 anomaly，不落库，最多每秒一次）。因此不要用事件频率推断任务是否在推进——判「卡住」看 task.anomaly 或 GET /self-check。',
       resp: `{ "event": "init", "tasks": [ /* 全部任务 */ ] }
-{ "event": "task_update", "task": { /* 任务对象 */ } }
+{ "event": "task_update", "task": { /* 任务对象，含 progress / anomaly */ } }
 { "event": "ping" }` },
     { method: 'WS', path: '/ws/logs', title: '日志流（增量推送）',
       resp: `{ "ts": 1786033736.9, "level": "INFO", "message": "task tts_xxx done" }` },

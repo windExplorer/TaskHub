@@ -6,7 +6,7 @@
 
 > 文档覆盖全部 HTTP 接口、WebSocket 与状态码语义。接口分四类：
 > ① TTS 标准接口（AstrBot 语音插件对接）② ComfyUI 标准接口（绘图插件对接）
-> ③ 监控与任务管理 ④ WebSocket 实时推送。
+> ③ 监控与任务管理（含设备状态、上游自检）④ WebSocket 实时推送。
 
 ---
 
@@ -31,6 +31,22 @@
 - TTS 合成结果：**裸 int16 PCM 字节流**（`application/octet-stream`），24kHz 单声道，无 WAV 头（WAV 头由插件补）。
 - ComfyUI 任务：JSON `{"prompt_id": "32位hex"}`。
 - 时间戳字段：Unix 秒（float）。
+
+### 0.3 运维相关能力速览
+
+日常排障最常用的四个：
+
+| 想干什么 | 用哪个 | 章节 |
+| --- | --- | --- |
+| 看这台机器/显卡现在什么状态（含温度功耗、上游 ComfyUI 与 CosyVoice 状态） | `GET /device`（`?raw=1` 带上游原始信息） | 3.2.1 |
+| 看「任务是不是卡住了」「上游是不是把 prompt 丢了」 | `GET /self-check`（异常清单） | 3.1.1 / 3.9 |
+| 立刻重跑一次上游核对，不等巡检周期 | `POST /self-check/run` | 3.10 |
+| 看每个任务的真实进度（节点 x/总数、采样步数） | `GET /queue` 的 `tasks[].progress`、`WS /ws/tasks` | 3.4 / 4.2 |
+
+> 三条已实现的自愈/兜底行为（上层无需感知，供排障时对照）：
+> ① 上游把 prompt 丢弃（重启/OOM 崩溃）→ 自动终结任务、释放单飞槽位、`/history/{prompt_id}` 返回明确失败条目；
+> ② 出图跟踪有硬超时（`comfyui.watch_timeout`，按单个任务计）；
+> ③ 服务重启后，上次遗留的 `running`/`queued` 历史记录会自动收敛为终态。
 
 ---
 
@@ -137,8 +153,15 @@ def synthesize(text, voice="xiaoyu.wav", max_retry=3):
 ```
 
 - 排队中的请求**内部阻塞等待槽位**（不返回 429），提交成功后立即返回 prompt_id。
-- **响应 200**：`{ "prompt_id": "e1f2...32位hex" }`
+- **响应 200**：`{ "prompt_id": "e1f2...32位hex" }`（这是中转站的**虚拟 pid**，插件照旧用它轮询 `/history/{prompt_id}`）。
 - 校验失败：透传真实 ComfyUI 的状态码与文案（常见 400）。
+- **转发时会改写 `client_id`**：统一成中转站自己的固定值（`taskhub-xxxxxxxx`，见 `/config` → `comfyui.client_id`；原值保留在同级字段 `_client_id_original` 里）。
+  原因：真实 ComfyUI 的 `executing` / `executed` / `progress` / `progress_state` 事件是
+  `send_sync(event, data, server.client_id)` 发出的，而执行期间 `server.client_id` 等于该 prompt 的
+  `client_id`，sid 不在线时事件会被**静默丢弃**；中转站必须用同一个 id 建 `/ws` 才收得到真实进度
+  （见 3.4 的 `progress`）。所以在 ComfyUI 网页端的队列里看到 client 是 `taskhub-xxxx` 属正常现象，
+  想固定它就在配置里写死 `comfyui.client_id`。
+- 转发前会剥掉以 `_` 开头的私有字段（如内部的 `_virtual_pid`），不会透给真实 ComfyUI。
 
 ### 2.2 `POST /upload/image` — 上传图生图参考图
 
@@ -287,17 +310,6 @@ Query：`filename`、`subfolder`、`type`（通常 `type=output`）。响应为�
 —— 来自真实 ComfyUI 的 `progress_state` / `progress` / `executing` / `executed` 事件，最多每秒推送一次。
 `anomaly`：自检异常标记（见 3.1.1），只在 WebSocket `task_update` 里实时推送，不落库。
 
-### 3.4.1 `GET /self-check` — 自检详情
-
-返回 `{level, count, items[], last_run, cycles, probe, progress_stream}`：
-`probe` 是最近一次上游探测快照（`reachable` / `running[]` / `pending[]` / `vram_free_gb`），
-`progress_stream` 是 `/ws` 订阅状态（`connected` / `last_event_ago` / `queue_remaining`）。
-
-### 3.4.2 `POST /self-check/run` — 手动触发一次自检
-
-排查用，不用等下一个巡检周期；返回同上结构。
-
-
 ### 3.5 `GET /tasks` — 全部任务（分页 + 筛选，查 SQLite 历史）
 
 Query 参数：
@@ -329,6 +341,51 @@ Query 参数：
 
 返回 `server` / `tts` / `comfyui` / `monitoring` / `inspector` 五组配置摘要与运行时值（含探测后的真实 `sample_rate`、提交给真实 ComfyUI 的 `client_id`）。修改请编辑 `middle-station.yaml` 后重启。
 
+与本文接口行为强相关的配置项（完整列表见 `middle-station.yaml` 注释）：
+
+| 配置项 | 默认 | 影响的接口/行为 |
+| --- | --- | --- |
+| `server.queue_wait` | 120 | 排队等待超时 → `429`（TTS 等走 `submit()` 的接口） |
+| `server.infer_timeout` | 120 | 推理超时 → `504` |
+| `server.max_concurrent` | 1 | 全局并发；GPU/显存过载时自动降半，见 `/monitor.effective_concurrent` |
+| `comfyui.serialize_concurrent` | 1 | `/prompt` 单飞放行数 |
+| `comfyui.watch_interval` | 2 | `_watch` 轮询真实 `/history` 间隔 |
+| `comfyui.watch_timeout` | 900 | 出图跟踪硬超时（按**单个任务**计，不含排队） |
+| `comfyui.watch_lost_grace` | 30 | 提交后多久开始核对真实 `/queue` 判断 prompt 是否被上游丢弃 |
+| `comfyui.watch_lost_confirm` | 2 | 连续多少次核对都查无此 prompt 才判定丢失 |
+| `comfyui.progress_stream` | true | 是否订阅真实 ComfyUI `/ws`（任务 `progress` 与 `stalled` 自检依赖它） |
+| `comfyui.client_id` | 自动 | 转发 `/prompt` 时使用的 client_id（进度事件只发给它） |
+| `inspector.enabled` | true | 是否启用上游自检巡检 |
+| `inspector.interval` | 10 | 自检周期（秒） |
+| `inspector.slow_factor` / `slow_min_seconds` | 3.0 / 60 | `slow` 异常阈值：`max(60s, 同类 P95 × 3)` |
+| `inspector.stall_seconds` | 240 | `stalled` 异常阈值：上游在跑但这么久无进度事件 |
+
+### 3.9 `GET /self-check` — 上游自检详情
+
+```json
+{
+  "level": "warn", "count": 2, "cycles": 42, "last_run": 1790348487.9,
+  "items": [
+    { "key": "resource:vram", "level": "warn", "code": "upstream_vram_low",
+      "msg": "上游显存仅剩 0.63GB (< 1.0GB)，出图/语音可能 OOM", "task_id": null, "ts": 1790348487.6 },
+    { "key": "upstream:external", "level": "info", "code": "upstream_external",
+      "msg": "上游有 1 个执行中 / 0 个排队的非本站已知任务", "task_id": null, "ts": 1790348487.6 }
+  ],
+  "probe": { "reachable": true, "running": ["eba82a3a-..."], "pending": [],
+             "vram_free_gb": 0.63, "vram_total_gb": 8.0 },
+  "progress_stream": { "connected": true, "last_event_ago": 0.3, "queue_remaining": 1 }
+}
+```
+
+- `level`：`ok` / `info` / `warn` / `error`，取所有异常里最严重的一档；`count` 为当前异常条数。
+- `items[].code` 的取值与含义见 **3.1.1**；`key` 是内部去重键（`task:<task_id>:<规则>` / `resource:vram` / `upstream:external` / `tts`）。
+- `probe`：最近一次上游探测快照；`progress_stream`：`/ws` 订阅状态。
+- 终态类异常（如 `lost`）会在任务终结后**粘性保留 120s**，避免用户还没看到就消失。
+
+### 3.10 `POST /self-check/run` — 手动触发一次自检
+
+排查用，不用等下一个巡检周期（默认 10s）。返回结构与 `GET /self-check` 相同。
+
 ---
 
 ## 4. WebSocket 实时推送
@@ -339,18 +396,32 @@ Query 参数：
 { "cpu_percent": 12.7, "ram_available_gb": 11.88, "gpu_load": 0.15,
   "gpu_free_gb": 6.43, "gpu_total_gb": 8.0, "gpu_threshold": 0.8,
   "queue_length": 0, "running": 0, "max_concurrent": 3,
-  "effective_concurrent": 3, "ts": 1786033736.9 }
+  "effective_concurrent": 3, "ts": 1786033736.9,
+  "self_check": { "level": "ok", "count": 0, "items": [] } }
 ```
+
+> 字段与 `GET /monitor` 一致；`self_check` 同 3.1.1（WebUI 顶部「自检」徽标用它，悬停出明细）。
+> 更完整的设备信息（型号/温度/功耗/上游状态）走 `GET /device`，不在这里每秒推送。
 
 ### 4.2 `WS /ws/tasks` — 任务事件
 
 连接后先发全量 `init`，之后每次状态变更推 `task_update`，空闲时每 15s 发 `ping` 保活：
 
 ```json
-{ "event": "init", "tasks": [ /* 全部任务 */ ] }
-{ "event": "task_update", "task": { /* 任务对象，同 /queue tasks 元素 */ } }
+{ "event": "init", "tasks": [ /* 全部任务，同 /queue 的 tasks 元素 */ ] }
+{ "event": "task_update", "task": { /* 单个任务对象，同上 */ } }
 { "event": "ping" }
 ```
+
+`task_update` 有两种触发来源，**事件格式完全相同**：
+
+| 来源 | 触发 | 是否落库 | 说明 |
+| --- | --- | --- | --- |
+| 状态变更 | 入队/开始/等待槽位/完成/失败/超时/取消 | ✅ 写 SQLite | 低频，一任务数次 |
+| **实时更新** | 真实上游进度（`progress`）、自检异常（`anomaly`） | ❌ 不落库 | 最多每秒一次，避免刷库；仅用于界面实时展示 |
+
+因此订阅方不要用 `task_update` 的频率推断任务是否在推进；判「是否卡住」请看 `task.anomaly`
+或 `GET /self-check`。任务对象里的 `progress` / `anomaly` 字段见 **3.4**。
 
 ### 4.3 `WS /ws/logs` — 日志流
 
@@ -399,6 +470,39 @@ with httpx.Client(timeout=10) as c:
     img = c.get(f"{BASE}/view", params={"filename": "00001.png",
                                         "subfolder": "", "type": "output"})
     open("out.png", "wb").write(img.content)
+```
+
+### 5.1 运维检查（设备 + 自检）
+
+```python
+import httpx
+
+BASE = "http://127.0.0.1:9000"
+with httpx.Client(timeout=15) as c:
+    # 设备状态：本机 + 上游后端一次看全
+    d = c.get(f"{BASE}/device").json()
+    g = (d["host"]["gpus"] or [{}])[0]
+    print(f'{g.get("name")} {g.get("util_percent")}% '
+          f'显存 {g.get("mem_free_gb")}/{g.get("mem_total_gb")}GB '
+          f'{g.get("temperature_c")}°C {g.get("power_w")}/{g.get("power_limit_w")}W')
+    print("ComfyUI:", d["upstreams"]["comfyui"]["reachable"],
+          d["upstreams"]["comfyui"]["system"].get("comfyui_version"),
+          "队列", d["upstreams"]["comfyui"]["queue"])
+    print("CosyVoice:", d["upstreams"]["cosyvoice"]["reachable"],
+          d["upstreams"]["cosyvoice"]["sample_rate"], "Hz")
+
+    # 自检：有异常时逐条打印（level >= warn 就值得看一眼）
+    sc = c.get(f"{BASE}/self-check").json()
+    print("self-check:", sc["level"], sc["count"])
+    for a in sc["items"]:
+        print(f'[{a["level"]}] {a["code"]}: {a["msg"]}')
+
+    # 怀疑任务卡住时：立刻重跑一次核对
+    print(c.post(f"{BASE}/self-check/run").json()["items"])
+    # 再对着 /queue 看哪个任务带着 anomaly
+    for t in c.get(f"{BASE}/queue").json()["tasks"]:
+        if t.get("anomaly") or t.get("progress"):
+            print(t["task_id"], t["status"], t.get("progress"), t.get("anomaly"))
 ```
 
 ---
