@@ -233,6 +233,24 @@ class TTSAdapter:
             logger.debug('proxy upstream /voices failed, fallback to local: %s', e)
         return local
 
+    async def voice_audio(self, name: str):
+        """代理上游 GET /api/voices/{name}/audio，返回 (bytes, content_type)。
+
+        上游 tts_serve 的该端点有路径穿越防护；这里只按音色名转发，
+        不对文件系统做操作。返回 None 表示上游不可用/音色不存在。
+        """
+        from urllib.parse import quote
+        try:
+            r = await self._client.get(
+                f'{self.base_url}/api/voices/{quote(name, safe="")}/audio',
+                timeout=15.0,
+            )
+            if r.status_code == 200 and r.content:
+                return r.content, r.headers.get('content-type', 'audio/wav')
+        except Exception as e:  # noqa: BLE001
+            logger.debug('proxy voice audio failed %s: %s', name, e)
+        return None
+
     def health(self) -> Dict:
         return {
             'status': 'ok' if self.model_loaded else 'loading',

@@ -495,6 +495,16 @@ def _register_routes(app: FastAPI):
     async def voices_api():
         return await tts.voices_info()
 
+    @app.get('/voices/{name}/audio')
+    async def voice_audio_api(name: str):
+        """代理上游 tts_serve 的参考音频文件，供插件音色库试听（不走合成）。"""
+        result = await tts.voice_audio(name)
+        if not result:
+            raise HTTPException(status_code=404, detail='参考音频不存在或上游不可用')
+        data, content_type = result
+        return Response(content=data, media_type=content_type,
+                        headers={'Cache-Control': 'public, max-age=86400'})
+
     # ---- ComfyUI 标准接口（docs/comfyui-backend-api.md §2） ----
     @app.post('/prompt')
     async def comfy_prompt(request: Request):
