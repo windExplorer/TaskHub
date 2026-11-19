@@ -11,6 +11,7 @@ server:
   # 取 30 + 110 = 140：合成侧留足（p99 有 39s 余量），排队侧 30s 覆盖约八成出图时长。
   queue_wait: 30              # 入队等待超时（秒），超时回 429；0 = 不限制（由客户端自行掐超时）
   infer_timeout: 110          # 单次推理超时（秒），超时回 504；0 = 不限制（由客户端自行掐超时）
+  vram_cleanup_on_type_switch: true  # 任务类型切换（tts<->comfyui）后、执行新任务前先清理残留显存
   db_path: ./middle-station.db
   log_max_lines: 100
   frontend_dir: ./frontend
@@ -32,6 +33,7 @@ comfyui:
   watch_lost_confirm: 2              # 连续 N 次「既不在 /queue 也不在 /history」才判丢失（防误判）
   progress_stream: true              # 订阅真实 ComfyUI /ws：真实进度（节点/步数）+ 卡死判据
   client_id: null                    # 提交给 ComfyUI 的 client_id，null = 自动生成 taskhub-xxxxxxxx
+  free_vram_on_type_switch: true     # 类型切离 comfyui 后调用真实 /free 卸载模型释放显存（配合上面总开关）
 
 monitoring:
   gpu_threshold: 0.8                 # GPU 算力占用率 >80% 时自动降并发

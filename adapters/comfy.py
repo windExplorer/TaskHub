@@ -405,6 +405,30 @@ class ComfyAdapter:
             return None
         return data if isinstance(data, dict) else None
 
+    async def free_vram(self, timeout: float = 15.0) -> bool:
+        """POST /free：卸载真实 ComfyUI 已加载模型并清空缓存，释放显存。
+
+        标准 ComfyUI 接口，body 同时带 unload_models + free_memory；卸载模型是
+        ComfyUI 侧真正归还显存的关键（仅 soft_empty_cache 不足以释放模型权重）。
+        仅用于「任务类型切离 comfyui」后、下一个任务开始前调用：此时单飞槽位已
+        由 _watch 归还、没有正在执行的 prompt，卸载不会误伤在跑的任务。
+        失败只告警返回 False，不阻断后续任务；返回是否请求成功。
+        """
+        try:
+            r = await self._client.post(
+                f'{self.base_url}/free',
+                json={'unload_models': True, 'free_memory': True},
+                timeout=timeout,
+            )
+        except httpx.RequestError as e:
+            logger.warning('[comfyui] free_vram request failed: %s', e)
+            return False
+        if r.status_code != 200:
+            logger.warning('[comfyui] free_vram http %s: %s', r.status_code, r.text[:200])
+            return False
+        logger.info('[comfyui] free_vram ok (unload_models + free_memory)')
+        return True
+
     def progress_snapshot(self) -> Optional[Dict]:
         """实时进度订阅状态（供 /device、自检展示）。"""
         return self.progress_stream.snapshot() if self.progress_stream else None

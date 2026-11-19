@@ -189,6 +189,19 @@ async def _on_task_live_update(task: Task):
     await broadcaster.publish({'event': 'task_update', 'task': task.to_dict()})
 
 
+async def _vram_cleanup_on_type_switch(prev_type: str, next_type: str):
+    """任务类型切换时释放上游残留显存（由 Scheduler 在安全窗口调用）。
+
+    显存残留主要来自 ComfyUI：出图完成后模型仍常驻显存，切到 TTS 时可能挤占
+    CosyVoice 的加载空间导致后续任务失败。CosyVoice 侧已自行释放，故这里只
+    处理「切离 comfyui」。清理失败由调度器捕获告警，不影响任务流转。
+    """
+    if not cfg.server.vram_cleanup_on_type_switch:
+        return
+    if prev_type == 'comfyui' and cfg.comfyui.free_vram_on_type_switch:
+        await comfy.free_vram()
+
+
 def _self_check() -> Dict:
     if inspector is None:
         return {'level': 'ok', 'count': 0, 'items': []}
@@ -662,6 +675,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         vram_min_free_gb=cfg.monitoring.vram_min_free_gb,
         gpu_load_provider=lambda: monitor.gpu,
         vram_provider=lambda: (monitor.gpu_free_gb, monitor.gpu_total_gb),
+        type_switch_cleanup=_vram_cleanup_on_type_switch,
     )
     storage = Storage(cfg.server.db_path)
     tts = TTSAdapter(cfg)

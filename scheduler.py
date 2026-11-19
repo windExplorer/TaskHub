@@ -111,6 +111,7 @@ class Scheduler:
         gpu_load_provider: Optional[Callable[[], float]] = None,
         vram_provider: Optional[Callable[[], Tuple[float, float]]] = None,
         gpu_scale_min_concurrent: int = 1,
+        type_switch_cleanup: Optional[Callable[[str, str], Any]] = None,
     ):
         self.max_concurrent = max_concurrent
         self.queue_timeout = queue_timeout
@@ -123,6 +124,11 @@ class Scheduler:
         self.vram_provider = vram_provider or (lambda: (0.0, 0.0))
         self.gpu_scale_min_concurrent = max(1, gpu_scale_min_concurrent)
         self.throttle_reason = 'normal'   # normal / gpu / vram / gpu+vram
+        # 类型切换清理钩子 async (prev_type, next_type) -> None：在「上一任务已终结、
+        # 新任务尚未派发」的安全窗口调用，供上游释放残留显存。清理失败不得阻断任务。
+        self.type_switch_cleanup = type_switch_cleanup
+        self._last_started_type: Optional[str] = None
+        self._cleanup_lock = asyncio.Lock()   # max_concurrent>1 时串行化切换清理，避免并发卸载
 
         self._heap: List[Task] = []
         self.tasks: Dict[str, Task] = {}
@@ -331,6 +337,26 @@ class Scheduler:
             # 惰性删除的脏条目（已被插队复制 / 已取消 / 已运行）
             if task.status != 'queued':
                 continue
+            # 任务类型切换：在「上一任务已终结、新任务未派发」的安全窗口清理残留显存。
+            # 仅当此刻无任何在跑任务时才做——否则并发下上游卸载模型会误伤正在执行的任务
+            #（max_concurrent=1 时这里始终为 0，天然满足）。清理失败只告警，不阻断任务。
+            if (self.type_switch_cleanup is not None
+                    and self._last_started_type is not None
+                    and self._last_started_type != task.task_type
+                    and self.running_tasks == 0):
+                async with self._cleanup_lock:
+                    prev = self._last_started_type
+                    if prev is not None and prev != task.task_type and self.running_tasks == 0:
+                        try:
+                            r = self.type_switch_cleanup(prev, task.task_type)
+                            if inspect.isawaitable(r):
+                                await r
+                            logger.info('[task] type switch %s -> %s: vram cleanup done',
+                                        prev, task.task_type)
+                        except Exception:  # noqa: BLE001
+                            logger.exception('[task] type switch %s -> %s vram cleanup failed',
+                                             prev, task.task_type)
+            self._last_started_type = task.task_type
             self.running_tasks += 1
             task.status = 'running'
             task.started_at = time.time()

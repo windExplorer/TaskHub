@@ -51,6 +51,8 @@ class ServerConfig:
     db_path: str = './middle-station.db'
     log_max_lines: int = 100
     frontend_dir: str = './frontend'
+    # 任务类型切换后、执行新任务前先清理残留显存（当前仅 ComfyUI 侧有卸载接口）
+    vram_cleanup_on_type_switch: bool = True
 
 
 @dataclass
@@ -72,6 +74,7 @@ class ComfyUIConfig:
     watch_lost_confirm: int = 2                # 连续 N 次核对都既不在 /queue 也不在 /history 才判定「丢失」
     progress_stream: bool = True               # 订阅真实 ComfyUI /ws 拿真实进度（心跳/节点/步数）
     client_id: Optional[str] = None            # 提交给真实 ComfyUI 的 client_id（None = 自动生成 taskhub-xxxx）
+    free_vram_on_type_switch: bool = True      # 任务类型切离 comfyui 时调用真实 /free 卸载模型释放显存
 
 
 @dataclass
@@ -131,6 +134,9 @@ class Config:
         cfg.server.db_path = _env('MIDDLE_DB_PATH') or s.get('db_path', cfg.server.db_path)
         cfg.server.log_max_lines = _env_int('MIDDLE_LOG_MAX_LINES', int(s.get('log_max_lines', cfg.server.log_max_lines)))
         cfg.server.frontend_dir = _env('MIDDLE_FRONTEND_DIR') or s.get('frontend_dir', cfg.server.frontend_dir)
+        cfg.server.vram_cleanup_on_type_switch = _env_bool(
+            'MIDDLE_VRAM_CLEANUP_ON_TYPE_SWITCH',
+            bool(s.get('vram_cleanup_on_type_switch', cfg.server.vram_cleanup_on_type_switch)))
 
         # tts
         t = data.get('tts', {}) or {}
@@ -159,6 +165,9 @@ class Config:
             'MIDDLE_COMFYUI_PROGRESS_STREAM',
             bool(c.get('progress_stream', cfg.comfyui.progress_stream)))
         cfg.comfyui.client_id = _env('MIDDLE_COMFYUI_CLIENT_ID') or c.get('client_id') or None
+        cfg.comfyui.free_vram_on_type_switch = _env_bool(
+            'MIDDLE_COMFYUI_FREE_VRAM_ON_TYPE_SWITCH',
+            bool(c.get('free_vram_on_type_switch', cfg.comfyui.free_vram_on_type_switch)))
 
         # monitoring
         m = data.get('monitoring', {}) or {}
