@@ -197,11 +197,41 @@ class TTSAdapter:
     # ---------- 只读辅助 ----------
 
     async def voices_info(self) -> Dict:
-        return {
+        """返回参考音频/音色映射。
+
+        优先代理上游 tts_serve 的 GET /voices（真实音色库，对象格式）：
+          {name: {prompt_wav, prompt_text, enabled}}
+        统一转成中转站标准结构 {voices_dir, files: list[str], texts: dict[str, str]}。
+        上游不可用时回退到本地配置映射（voices.json / voices_dir / 内联 voices）。
+        """
+        local = {
             'voices_dir': self.voices_dir,
             'files': sorted(self.voices.keys()),
-            'texts': {k: (v if v else '') for k, v in self.voices.items()},
+            'texts': {k: (v if isinstance(v, str) else '') for k, v in self.voices.items()},
         }
+        try:
+            r = await self._client.get(f'{self.base_url}/voices', timeout=10.0)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, dict):
+                    files: list[str] = []
+                    texts: dict[str, str] = {}
+                    for name, info in data.items():
+                        if not isinstance(info, dict) or info.get('enabled') is False:
+                            continue
+                        wav = str(info.get('prompt_wav') or name)
+                        files.append(wav)
+                        ptext = info.get('prompt_text', '')
+                        texts[wav] = ptext if isinstance(ptext, str) else ''
+                    if files:
+                        return {
+                            'voices_dir': self.voices_dir,
+                            'files': sorted(files),
+                            'texts': texts,
+                        }
+        except Exception as e:  # noqa: BLE001
+            logger.debug('proxy upstream /voices failed, fallback to local: %s', e)
+        return local
 
     def health(self) -> Dict:
         return {
