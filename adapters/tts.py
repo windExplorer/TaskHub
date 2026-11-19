@@ -200,14 +200,17 @@ class TTSAdapter:
         """返回参考音频/音色映射。
 
         优先代理上游 tts_serve 的 GET /voices（真实音色库，对象格式）：
-          {name: {prompt_wav, prompt_text, enabled}}
-        统一转成中转站标准结构 {voices_dir, files: list[str], texts: dict[str, str]}。
+          {name: {prompt_wav, prompt_text, enabled, language?}}
+        统一转成中转站结构：
+          {voices_dir, files: list[str], texts: dict[str,str], languages: dict[str,str]}
+        languages 是插件侧语种标注（如 zh/en/ja），上游有就透传。
         上游不可用时回退到本地配置映射（voices.json / voices_dir / 内联 voices）。
         """
         local = {
             'voices_dir': self.voices_dir,
             'files': sorted(self.voices.keys()),
             'texts': {k: (v if isinstance(v, str) else '') for k, v in self.voices.items()},
+            'languages': {},
         }
         try:
             r = await self._client.get(f'{self.base_url}/voices', timeout=10.0)
@@ -216,6 +219,7 @@ class TTSAdapter:
                 if isinstance(data, dict):
                     files: list[str] = []
                     texts: dict[str, str] = {}
+                    languages: dict[str, str] = {}
                     for name, info in data.items():
                         if not isinstance(info, dict) or info.get('enabled') is False:
                             continue
@@ -223,11 +227,15 @@ class TTSAdapter:
                         files.append(wav)
                         ptext = info.get('prompt_text', '')
                         texts[wav] = ptext if isinstance(ptext, str) else ''
+                        lang = info.get('language', '')
+                        if isinstance(lang, str) and lang.strip():
+                            languages[wav] = lang.strip()
                     if files:
                         return {
                             'voices_dir': self.voices_dir,
                             'files': sorted(files),
                             'texts': texts,
+                            'languages': languages,
                         }
         except Exception as e:  # noqa: BLE001
             logger.debug('proxy upstream /voices failed, fallback to local: %s', e)

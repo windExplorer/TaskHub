@@ -674,7 +674,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     # 上次进程遗留的 running/queued 行只存在于 DB，启动时收敛为终态（避免任务页永远显示运行中）
     storage.reconcile_stale()
 
-    app = FastAPI(title='TaskHub', description='本地 LLM 调度', version='1.2.0', lifespan=lifespan)
+    app = FastAPI(title='TaskHub', description='本地 LLM 调度', version='1.3.0', lifespan=lifespan)
     _register_routes(app)
     scheduler.on_task_update(_on_task_update)
     scheduler.on_task_live_update(_on_task_live_update)
