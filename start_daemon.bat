@@ -59,10 +59,10 @@ if defined FOUND (
     echo [info] port 9000 is free.
 )
 
-rem ---------- 4. start daemon ----------
+rem ---------- 4. start daemon (hidden, no console) ----------
 echo [4/4] starting TaskHub in background...
 echo.
-uv run python main.py start --daemon
+wscript.exe "%~dp0start_daemon.vbs"
 if errorlevel 1 (
     echo [ERROR] daemon start failed. See logs\server.log
     pause
@@ -74,5 +74,6 @@ echo [info] dashboard: http://127.0.0.1:9000/ui
 echo [info] log:       logs\server.log
 echo [info] stop:      run stop.bat  (or tray icon -^> Quit)
 echo.
-pause >nul
+echo [info] this window will close in 3s...
+ping -n 4 127.0.0.1 >nul
 endlocal

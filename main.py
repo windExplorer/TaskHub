@@ -84,6 +84,17 @@ def _setup_logging(log_buffer: 'LogBuffer'):
     log_buffer.setFormatter(fmt)
     root.addHandler(log_buffer)
 
+    # 文件日志：pythonw 无控制台，日志必须自己落盘（VBS 后台启动靠它排障）。
+    try:
+        _log_file.parent.mkdir(parents=True, exist_ok=True)
+        if not any(isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', '') == str(_log_file)
+                   for h in root.handlers):
+            fh = logging.FileHandler(_log_file, encoding='utf-8')
+            fh.setFormatter(fmt)
+            root.addHandler(fh)
+    except OSError:
+        pass
+
 
 # ============================================================================
 # 全局状态（由 create_app 初始化）

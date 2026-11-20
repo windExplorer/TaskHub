@@ -42,10 +42,9 @@ def set_autostart(enabled: bool) -> bool:
     try:
         if enabled:
             p.parent.mkdir(parents=True, exist_ok=True)
-            # 用当前解释器启动 daemon；路径加引号防止空格目录出错
-            exe = sys.executable
-            main_py = _ROOT / 'main.py'
-            line = f'@echo off\r\ncd /d "{_ROOT}"\r\nstart "" "{exe}" "{main_py}" start --daemon\r\n'
+            # 走 VBS 隐藏启动器（pythonw，无窗口、脱离控制台），与手动启动一致
+            vbs = _ROOT / 'start_daemon.vbs'
+            line = f'@echo off\r\ncd /d "{_ROOT}"\r\nwscript.exe "{vbs}"\r\n'
             p.write_text(line, encoding='utf-8')
         else:
             if p.exists():
