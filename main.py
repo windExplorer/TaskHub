@@ -170,9 +170,22 @@ def _new_id(prefix: str) -> str:
 # ============================================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global nsfw_checker
     await monitor.start()
     scheduler.start()
     await tts.start()
+
+    # NSFW 启动探测：配置 enabled=true 但 nsfw-check 服务没装/没启动时，
+    # 直接禁用送检（comfy.nsfw=None），走原来的生图/发图流程，零开销零 warning。
+    if nsfw_checker is not None:
+        healthy = await nsfw_checker.probe(timeout=2.0)
+        if healthy is None:
+            logger.warning('[nsfw] service unreachable at %s at startup; NSFW 送检已自动禁用（生图/发图不受影响）',
+                           cfg.nsfw.base_url)
+            await nsfw_checker.close()
+            nsfw_checker = None
+            comfy.nsfw = None
+
     comfy.start()                 # 订阅真实 ComfyUI 的进度事件（/ws）
     inspector.start()             # 上游自检巡检
     logger.info('TaskHub up: http://%s:%s (tts=%s, comfyui=%s, client_id=%s, nsfw=%s)',
