@@ -50,7 +50,7 @@ class ServerConfig:
     infer_timeout: int = 110      # 单次推理超时（秒），超时回 504
     db_path: str = './middle-station.db'
     log_max_lines: int = 100
-    frontend_dir: str = './frontend'
+    frontend_dir: str = './webui/dist'
     # 任务类型切换后、执行新任务前先清理残留显存（当前仅 ComfyUI 侧有卸载接口）
     vram_cleanup_on_type_switch: bool = True
 
@@ -99,12 +99,32 @@ class InspectorConfig:
 
 
 @dataclass
+class NsfwConfig:
+    """出图后自动送检 nsfw-check（独立检测服务，见 X:/_WorkSpace/Mine/nsfw-check）。
+
+    mode:
+      label — 检测结论随 history 返回（entry['nsfw']），是否拦截由调用方决定；
+      block — action=block 的图不返回，插件直接收到「生成失败（NSFW 拦截）」。
+    output_dir: ComfyUI output 目录。填写后送检带 file:// 引用（检测服务与中转站
+      同机时不重复存图）；留空则检测服务按自己的 SAVE_MODE 决定是否落盘。
+    """
+    enabled: bool = False
+    base_url: str = 'http://127.0.0.1:8890'
+    token: str = ''
+    mode: str = 'label'                        # label | block
+    timeout: float = 25.0                      # 单次检测 HTTP 超时（秒）
+    wait_seconds: float = 15.0                 # history 轮询等待检测完成的上限（秒）
+    output_dir: str = ''                       # ComfyUI output 目录（可选）
+
+
+@dataclass
 class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     comfyui: ComfyUIConfig = field(default_factory=ComfyUIConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     inspector: InspectorConfig = field(default_factory=InspectorConfig)
+    nsfw: NsfwConfig = field(default_factory=NsfwConfig)
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> 'Config':
@@ -199,5 +219,16 @@ class Config:
         cfg.inspector.system_stats_every = _env_int(
             'MIDDLE_INSPECTOR_SYSTEM_STATS_EVERY',
             int(i.get('system_stats_every', cfg.inspector.system_stats_every)))
+
+        # nsfw
+        n = data.get('nsfw', {}) or {}
+        cfg.nsfw.enabled = _env_bool('MIDDLE_NSFW_ENABLED', bool(n.get('enabled', cfg.nsfw.enabled)))
+        cfg.nsfw.base_url = _env('MIDDLE_NSFW_BASE_URL') or n.get('base_url', cfg.nsfw.base_url)
+        cfg.nsfw.token = _env('MIDDLE_NSFW_TOKEN') or n.get('token', cfg.nsfw.token)
+        cfg.nsfw.mode = _env('MIDDLE_NSFW_MODE') or n.get('mode', cfg.nsfw.mode)
+        cfg.nsfw.timeout = _env_float('MIDDLE_NSFW_TIMEOUT', float(n.get('timeout', cfg.nsfw.timeout)))
+        cfg.nsfw.wait_seconds = _env_float(
+            'MIDDLE_NSFW_WAIT_SECONDS', float(n.get('wait_seconds', cfg.nsfw.wait_seconds)))
+        cfg.nsfw.output_dir = _env('MIDDLE_NSFW_OUTPUT_DIR') or n.get('output_dir', cfg.nsfw.output_dir)
 
         return cfg

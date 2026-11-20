@@ -1,0 +1,113 @@
+/** API 客户端：全部走相对路径（开发由 Vite 代理，生产与 FastAPI 同源）。 */
+import type {
+  DeviceResp,
+  RuntimeConfig,
+  StatsBrief,
+  StatsDetail,
+  TasksPageData,
+} from "./types";
+
+export class ApiFailure extends Error {
+  constructor(
+    public code: string,
+    public detail: string,
+    public status = 0,
+  ) {
+    super(detail);
+    this.name = "ApiFailure";
+  }
+}
+
+interface ErrorBody {
+  ok?: false;
+  error?: string;
+  msg?: string;
+}
+
+async function request<T>(path: string, init: RequestInit, timeoutMs: number): Promise<T> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(path, { ...init, signal: ctrl.signal });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new ApiFailure("timeout", `请求超时（${Math.round(timeoutMs / 1000)}s）`, 0);
+    }
+    throw new ApiFailure("network_error", "无法连接 TaskHub 服务", 0);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    /* 非 JSON 响应按空处理 */
+  }
+
+  if (!res.ok) {
+    const b = (body ?? {}) as ErrorBody;
+    throw new ApiFailure(b.error ?? `http_${res.status}`, b.msg ?? res.statusText, res.status);
+  }
+  return body as T;
+}
+
+function qs(params: Record<string, unknown>): string {
+  const pairs = Object.entries(params)
+    .filter(([, v]) => v !== undefined && v !== "")
+    .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`);
+  return pairs.length ? `?${pairs.join("&")}` : "";
+}
+
+// ---------- 设备 / 自检 ----------
+
+export async function fetchDevice(raw = false): Promise<DeviceResp> {
+  return request<DeviceResp>(`/device${raw ? "?raw=1" : ""}`, { method: "GET" }, 15_000);
+}
+
+export async function fetchSelfCheck(): Promise<unknown> {
+  return request("/self-check", { method: "GET" }, 10_000);
+}
+
+export async function runSelfCheck(): Promise<unknown> {
+  return request("/self-check/run", { method: "POST" }, 15_000);
+}
+
+// ---------- 统计 ----------
+
+export async function fetchStats(hours = 24): Promise<StatsBrief> {
+  return request<StatsBrief>(`/stats${qs({ hours })}`, { method: "GET" }, 10_000);
+}
+
+export async function fetchStatsDetail(hours = 24): Promise<StatsDetail> {
+  return request<StatsDetail>(`/stats/detail${qs({ hours })}`, { method: "GET" }, 10_000);
+}
+
+// ---------- 任务 ----------
+
+export type TaskQuery = {
+  page: number;
+  page_size: number;
+  task_type?: string;
+  status?: string;
+  keyword?: string;
+};
+
+export async function fetchTasks(q: TaskQuery): Promise<TasksPageData> {
+  return request<TasksPageData>(`/tasks${qs(q)}`, { method: "GET" }, 10_000);
+}
+
+export async function promoteTask(taskId: string, priority = -1): Promise<void> {
+  await request(`/tasks/${encodeURIComponent(taskId)}/promote${qs({ priority })}`, { method: "POST" }, 10_000);
+}
+
+export async function cancelTask(taskId: string): Promise<void> {
+  await request(`/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" }, 10_000);
+}
+
+// ---------- 配置 ----------
+
+export async function fetchConfig(): Promise<RuntimeConfig> {
+  return request<RuntimeConfig>("/config", { method: "GET" }, 10_000);
+}

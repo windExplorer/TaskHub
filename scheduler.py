@@ -132,6 +132,11 @@ class Scheduler:
 
         self._heap: List[Task] = []
         self.tasks: Dict[str, Task] = {}
+        # 内存保留的最近任务数护栏：self.tasks 只服务排队/插队/取消/展示，
+        # 全量历史在 SQLite。长期运行不淘汰会让 position_of/queued_count/
+        # WS init 随总任务数线性变慢并吃内存。
+        self._track_limit = 1000
+        self._track_soft_limit = 1300   # 超过软上限才触发一次批量淘汰（摊薄排序开销）
         self.running_tasks = 0
         self.total_queued = 0
         self.total_completed = 0
@@ -243,18 +248,22 @@ class Scheduler:
         qw = qw if (qw and qw > 0) else None
         it = it if (it and it > 0) else None
 
-        # 阶段一：排队（等待 worker 取出开始执行），超时 -> 429
+        # 阶段一：排队（等待 worker 取出开始执行），超时 -> 429。
+        # 不加 shield：超时由 wait_for 取消内部等待协程，避免泄漏悬挂 waiter。
         try:
-            await asyncio.wait_for(asyncio.shield(task.started_event.wait()), timeout=qw)
+            await asyncio.wait_for(task.started_event.wait(), timeout=qw)
         except asyncio.TimeoutError:
             if task.status == 'queued':
                 task.status = 'cancelled'
                 self._emit_async(task)
-            return task.result, 429, 'queue wait timeout, try later'
+                return task.result, 429, 'queue wait timeout, try later'
+            # 竞态窗口：worker 恰在超时瞬间取走了任务（status 已离开 queued）。
+            # 任务已在执行，此时回 429 会让客户端重试、同一推理跑两遍——落入阶段二继续等结果。
 
-        # 阶段二：执行（等待 handler 完成），超时 -> 504
+        # 阶段二：执行（等待 handler 完成），超时 -> 504。
+        # 不加 shield：超时即取消 handler 本体（释放上游推理），而不是弃养它继续占资源。
         try:
-            await asyncio.wait_for(asyncio.shield(task.future), timeout=it)
+            await asyncio.wait_for(task.future, timeout=it)
         except asyncio.TimeoutError:
             if task.status in ('running', 'queued'):
                 task.status = 'timeout'
@@ -323,7 +332,14 @@ class Scheduler:
         while not self._stopping:
             eff = self._effective_concurrent()
             if self.running_tasks >= eff:
-                await asyncio.sleep(0.2)
+                # 槽位满：等完成事件的唤醒（_run_task/confirm_task 终结时会 set），
+                # 0.2s 超时兜底 eff 变化（GPU 降并发恢复）。轮询式 sleep 会让每个槽位
+                # 的补位延迟高达 200ms，快速任务下吞吐直接腰斩。
+                self._wakeup.clear()
+                try:
+                    await asyncio.wait_for(self._wakeup.wait(), timeout=0.2)
+                except asyncio.TimeoutError:
+                    pass
                 continue
             if not self._heap:
                 self._wakeup.clear()
@@ -373,9 +389,10 @@ class Scheduler:
             # 超时策略：task.handler_timeout 优先，其次全局 infer_timeout；0/负 = 不限时
             it = task.handler_timeout if task.handler_timeout is not None else self.infer_timeout
             it = it if (it and it > 0) else None
-            result = await asyncio.wait_for(
-                asyncio.shield(task.handler(task)), timeout=it
-            )
+            # 直接等待 handler（不加 shield）：超时由 wait_for 取消 handler 本体，
+            # 上游推理同步终止、槽位与并发计数保持一致；弃养孤儿协程会让它在后台
+            # 继续占用上游（CosyVoice/ComfyUI）并产生「exception never retrieved」。
+            result = await asyncio.wait_for(task.handler(task), timeout=it)
             task.result = result
             # 先解除 HTTP 等待方：handler 已返回（如 ComfyUI 已拿到 prompt_id），
             # 提交方立即拿到响应，无需等任务终结。
@@ -419,6 +436,7 @@ class Scheduler:
                 task.future.set_result(task.status_code)
             self._emit_async(task)
             self._wakeup.set()
+            self._evict_stale_tracked()
 
     def set_task_status(self, task: Task, status: str, status_code: Optional[int] = None):
         """更新任务状态并广播（供适配层在 handler 内部标记子状态，如等待单飞槽位）。"""
@@ -459,10 +477,25 @@ class Scheduler:
             task.future.set_result(status_code)
         self._emit_async(task)
         self._wakeup.set()
+        self._evict_stale_tracked()
         logger.info('[task] %s confirmed %s (code=%s) by watch',
                     task.task_id, status, status_code)
 
     # ---------- 查询 ----------
+
+    _TERMINAL = ('done', 'failed', 'timeout', 'cancelled')
+
+    def _evict_stale_tracked(self):
+        """终态任务超出软上限时按 created_at 淘汰最旧一批，回到保留上限。"""
+        if len(self.tasks) <= self._track_soft_limit:
+            return
+        terminal = sorted(
+            (t for t in self.tasks.values() if t.status in self._TERMINAL),
+            key=lambda t: t.created_at,
+        )
+        excess = len(self.tasks) - self._track_limit
+        for t in terminal[:excess]:
+            self.tasks.pop(t.task_id, None)
 
     def queued_count(self) -> int:
         return sum(1 for t in self.tasks.values() if t.status == 'queued')

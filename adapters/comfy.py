@@ -32,7 +32,7 @@ logger = logging.getLogger('middle_station.comfyui')
 
 
 class ComfyAdapter:
-    def __init__(self, cfg, scheduler=None):
+    def __init__(self, cfg, scheduler=None, nsfw=None):
         self.base_url = cfg.comfyui.base_url.rstrip('/')
         self.watch_interval = cfg.comfyui.watch_interval
         self.watch_timeout = cfg.comfyui.watch_timeout
@@ -42,6 +42,12 @@ class ComfyAdapter:
         # （ComfyUI send_sync 带 sid，sid 不在线就丢弃），所以由中转站统一持有并订阅。
         self.client_id = getattr(cfg.comfyui, 'client_id', None) or f'taskhub-{uuid.uuid4().hex[:8]}'
         self._scheduler = scheduler
+        # NSFW 送检（nsfw_check 服务；None = 未启用）。检测在出图成功后、
+        # 任务终结前执行（占用单飞槽位，保证与 ComfyUI 显存串行）。
+        self.nsfw = nsfw
+        self._nsfw_results: Dict[str, Dict] = {}   # real_pid -> 聚合 verdict
+        self._nsfw_events: Dict[str, asyncio.Event] = {}  # real_pid -> 检测完成信号
+        self._nsfw_bg_tasks: set = set()           # label 模式后台检测任务（持引用防 GC）
         self.sem = asyncio.Semaphore(cfg.comfyui.serialize_concurrent)
         self.states: Dict[str, str] = {}      # 虚拟prompt_id -> queued/running/done/failed
         self.task_ids: Dict[str, str] = {}    # 虚拟prompt_id -> task_id
@@ -50,6 +56,9 @@ class ComfyAdapter:
         # 失败任务的合成 history 条目：插件轮询 /history/{虚拟pid} 时立刻拿到明确失败，
         # 而不是永远空 {}（否则插件要一直轮询到自己的超时）。
         self.failed_entries: Dict[str, Dict] = {}
+        # 已终结映射的延迟淘汰（插件拿完结果就不再需要 pid_map/states/progress 等，
+        # 长期运行的服务不清理会无界增长）。每个任务终结后安排一次定时清理。
+        self._evict_tasks: set = set()
         # 真实进度（订阅 /ws 得到）：real_pid -> {nodes_done, nodes_total, node, step, step_total, ts, state}
         self.progress: Dict[str, Dict] = {}
         self._tasks_by_real: Dict[str, Task] = {}
@@ -66,6 +75,10 @@ class ComfyAdapter:
             timeout=httpx.Timeout(
                 connect=10.0, read=cfg.server.infer_timeout + 30.0,
                 write=30.0, pool=10.0))
+        if scheduler is not None:
+            # 终态回调：任务在「尚未提交真实上游」阶段就失败/取消时，
+            # 给插件轮询的虚拟 pid 合成失败条目（否则插件拿到永远的 {}）。
+            scheduler.on_task_update(self.on_task_terminal)
 
     def start(self):
         """订阅真实 ComfyUI 的进度事件（断线自动重连）。"""
@@ -80,8 +93,14 @@ class ComfyAdapter:
             wt.cancel()
         for ft in list(self._flush_tasks.values()):
             ft.cancel()
+        for bt in list(self._nsfw_bg_tasks):
+            bt.cancel()
+        for et in list(self._evict_tasks):
+            et.cancel()
         self._watch_tasks.clear()
         self._flush_tasks.clear()
+        self._nsfw_bg_tasks.clear()
+        self._evict_tasks.clear()
         await self._client.aclose()
 
     # ---------- 真实进度（/ws 事件） ----------
@@ -108,14 +127,29 @@ class ComfyAdapter:
         elif etype == 'executing':
             node = data.get('node')
             if node is None:
+                # 收尾：本轮执行流里启动过的节点此时都已完成
                 prog['state'] = 'finishing'
+                prog['nodes_done'] = max(prog['nodes_done'],
+                                         prog.get('nodes_cached', 0) + len(prog.get('_seen', ())))
             else:
-                prog['node'] = str(node)
+                node = str(node)
+                seen = prog.setdefault('_seen', set())
+                if node not in seen:
+                    seen.add(node)
+                    # 顺序单飞执行：新节点开工意味着此前启动过的节点都已完成。
+                    # 注意 `executed` 事件只发给有输出（SaveImage 类）的节点，普通
+                    # 计算节点只有 executing——靠它计数会全程停在个位数。
+                    prog['nodes_done'] = max(prog['nodes_done'],
+                                             prog.get('nodes_cached', 0) + len(seen) - 1)
+                prog['node'] = node
                 if prog['state'] != 'running':
                     prog['state'] = 'running'
         elif etype == 'executed':
-            prog['nodes_done'] = max(prog['nodes_done'], prog['nodes_done'] + 1)
-            prog['step'] = prog['step_total'] = None
+            node = str(data.get('node') or '')
+            if node:
+                prog.setdefault('_seen', set()).add(node)
+            prog['nodes_done'] = max(prog['nodes_done'],
+                                     prog.get('nodes_cached', 0) + len(prog.get('_seen', ())))
         elif etype == 'progress':
             prog['node'] = str(data.get('node') or prog.get('node') or '')
             prog['step'] = data.get('value')
@@ -231,6 +265,10 @@ class ComfyAdapter:
             'state': 'queued', 'ts': time.time(), 'started': time.time(),
         }
         self.failed_entries.pop(virtual_pid, None)
+        # NSFW：出图成功后要送检，先登记完成信号（history 轮询据此等待检测结束）
+        if self.nsfw is not None:
+            self._nsfw_events[real_pid] = asyncio.Event()
+            self._nsfw_results.pop(real_pid, None)
         # 提交成功：任务保持 running（pending_confirm），
         # 等待 _watch 轮询真实出图结果后由 confirm_task() 终结；槽位由 _watch 释放。
         task.pending_confirm = True
@@ -275,6 +313,7 @@ class ComfyAdapter:
     def _finish(self, prompt_id: str, status: str, code: int, error: str = ''):
         """出图终结：更新本地状态表，并把结果回写到调度器任务。"""
         self.states[prompt_id] = status
+        real_pid = self.pid_map.get(prompt_id)
         if status != 'done':
             # 让插件轮询 /history/{虚拟pid} 时立刻看到终态失败，不再空转等待
             self.failed_entries[prompt_id] = {
@@ -291,7 +330,19 @@ class ComfyAdapter:
                 'meta': {},
             }
         else:
-            self._push_progress(prompt_id, force=True)
+            # 出图完成：进度收敛到满格。顺序执行计数在收尾前可能有 ±1 的估计误差，
+            # 不收敛的话任务表会显示「12/28 节点 · 42% → 完成」，像步骤没跑完。
+            # 注意 progress/_tasks_by_real 都按真实 pid 键存，推送必须用 real_pid
+            # （原实现误用虚拟 pid，最终补推是静默空操作）。
+            prog = self.progress.get(real_pid)
+            if prog is not None:
+                total = prog.get('nodes_total') or 0
+                if total:
+                    prog['nodes_done'] = max(prog.get('nodes_done', 0), total)
+                if prog.get('step_total'):
+                    prog['step'] = prog['step_total']
+                prog['state'] = 'done'
+            self._push_progress(real_pid, force=True)
         task = self._watchers.pop(prompt_id, None)
         # 终结即停掉该任务的 _watch（它负责归还单飞槽位），避免槽位被继续占住
         watch_task = self._watch_tasks.pop(prompt_id, None)
@@ -306,6 +357,8 @@ class ComfyAdapter:
                 flush.cancel()
         if task is not None and self._scheduler is not None:
             self._scheduler.confirm_task(task, status, code, error)
+        # 映射条目延迟淘汰（插件拿结果的窗口内保留，之后防内存无界增长）
+        self._evict_later(prompt_id, real_pid, self._MAPPING_TTL)
 
     def abort_task(self, task: Task, code: int = 500, error: str = 'aborted by inspector') -> bool:
         """外部判定任务已不可救（如自检发现上游把 prompt 丢了）时终结它并释放槽位。"""
@@ -314,6 +367,50 @@ class ComfyAdapter:
             return False
         self._finish(virtual_pid, 'failed', code, error)
         return True
+
+    # ---------- 终态回调 / 映射淘汰 ----------
+
+    def on_task_terminal(self, task: Task) -> None:
+        """调度器终态回调（on_task_update 注册）：任务在「尚未提交真实上游」阶段
+        就失败/超时/取消时，给插件轮询的虚拟 pid 合成失败条目。
+
+        否则 /prompt 已返回虚拟 pid 但 states 停在 'queued'，插件轮询 /history
+        永远拿到 {} ，只能空转到自己的超时（上游 400、提交阶段异常、排队被取消
+        都会走到这里）。
+        """
+        if task.task_type != 'comfyui' or task.status not in ('failed', 'timeout', 'cancelled'):
+            return
+        virtual_pid = ((task.payload or {}).get('_virtual_pid')) or task.task_id
+        if self.states.get(virtual_pid) != 'queued':
+            return   # 已映射到真实 pid：终结由 _watch/_finish 负责
+        self._finish(virtual_pid, 'failed', task.status_code or 500,
+                     task.error or f'task {task.status} before submission')
+
+    _MAPPING_TTL = 600.0   # 任务终结后映射条目的保留时长（秒），插件在此窗口内仍可轮询结果
+
+    def _evict_later(self, virtual_pid: str, real_pid: Optional[str], delay: float) -> 'asyncio.Task':
+        """任务终结 delay 秒后淘汰该任务的映射条目（states/pid_map/progress 等），
+        防止长期运行的服务里这些 dict 无界增长。TTL 内插件仍可轮询到最终结果。"""
+
+        async def _evict_after() -> None:
+            await asyncio.sleep(delay)
+            self._do_evict(virtual_pid, real_pid)
+
+        t = asyncio.create_task(_evict_after())
+        self._evict_tasks.add(t)
+        t.add_done_callback(self._evict_tasks.discard)
+        return t
+
+    def _do_evict(self, virtual_pid: str, real_pid: Optional[str]) -> None:
+        self.states.pop(virtual_pid, None)
+        self.task_ids.pop(virtual_pid, None)
+        self.pid_map.pop(virtual_pid, None)
+        self.failed_entries.pop(virtual_pid, None)
+        if real_pid:
+            self._vpids_by_real.pop(real_pid, None)
+            self.progress.pop(real_pid, None)
+            self._nsfw_events.pop(real_pid, None)
+            self._nsfw_results.pop(real_pid, None)
 
     async def history_entry(self, real_pid: str):
         """查真实 /history/{real_pid}。返回 (entry|None, 查询是否成功)。
@@ -445,6 +542,120 @@ class ComfyAdapter:
             }
         return out
 
+    # ---------- NSFW 送检 ----------
+
+    @staticmethod
+    def _entry_images(entry: Dict) -> list:
+        """从真实 history entry 提取所有输出图（filename/subfolder/type）。"""
+        out = []
+        for node in (entry.get('outputs') or {}).values():
+            for img in (node or {}).get('images') or []:
+                if isinstance(img, dict) and img.get('filename'):
+                    out.append(img)
+        return out
+
+    _LEVEL_RANK = {'nsfw': 0, 'review': 1, 'unavailable': 2, 'safe': 3}
+    _ACTION_RANK = {'block': 0, 'review': 1, 'allow': 2}
+
+    async def _nsfw_check_entry(self, real_pid: str, entry: Dict) -> Dict:
+        """并行送检 entry 里全部输出图（每张一次 /detect），聚合最严结论。
+
+        失败降级不阻塞（verdict.available=False）。完成时 set 事件，
+        history 轮询（_nsfw_attach）据此等待。
+        """
+        assert self.nsfw is not None
+        verdict: Dict = {'available': False, 'error': 'no image detected'}
+        try:
+            images = self._entry_images(entry)[:4]  # 最多送检 4 张，防止超长批量
+            if not images:
+                return verdict
+
+            async def _one(img: Dict) -> Optional[Dict]:
+                try:
+                    r = await self._client.get(
+                        f'{self.base_url}/view',
+                        params={'filename': img['filename'],
+                                'subfolder': img.get('subfolder', ''),
+                                'type': img.get('type', 'output')},
+                        timeout=self.nsfw.timeout + 10.0)
+                    if r.status_code != 200:
+                        return None
+                    v = await self.nsfw.check(r.content, img['filename'], img.get('subfolder', ''))
+                except Exception as e:  # noqa: BLE001
+                    logger.warning('[nsfw] fetch/check image %s failed: %s', img.get('filename'), e)
+                    return None
+                if v is None:
+                    return None
+                v = dict(v)
+                v.setdefault('filename', img['filename'])
+                return v
+
+            results = [v for v in await asyncio.gather(
+                *(_one(img) for img in images)) if v is not None]
+            worst = None
+            for v in results:
+                if worst is None:
+                    worst = v
+                    continue
+                worst_key = (self._ACTION_RANK.get(str(worst.get('action')), 9),
+                             self._LEVEL_RANK.get(str(worst.get('level')), 9))
+                v_key = (self._ACTION_RANK.get(str(v.get('action')), 9),
+                         self._LEVEL_RANK.get(str(v.get('level')), 9))
+                if v_key < worst_key:
+                    worst = v
+            if worst is not None:
+                worst['images_checked'] = len(images)
+                verdict = worst
+        except Exception as e:  # noqa: BLE001
+            logger.warning('[nsfw] check task %s failed: %s', real_pid, e)
+            verdict = {'available': False, 'error': str(e)}
+        finally:
+            self._nsfw_results[real_pid] = verdict
+            ev = self._nsfw_events.get(real_pid)
+            if ev is not None:
+                ev.set()
+        if verdict.get('available'):
+            logger.info('[nsfw] task %s verdict: level=%s action=%s score=%s',
+                        real_pid, verdict.get('level'), verdict.get('action'), verdict.get('score'))
+        return verdict
+
+    def _nsfw_blocked_entry(self, prompt_id: str, verdict: Dict) -> Dict:
+        """block 模式下的合成 history 条目：插件立刻收到明确失败，不泄露图片。"""
+        detail = f"level={verdict.get('level')}, score={verdict.get('score')}"
+        return {
+            'prompt': [],
+            'outputs': {},
+            'status': {
+                'status_str': 'error',
+                'completed': False,
+                'messages': [['execution_error', {
+                    'prompt_id': prompt_id,
+                    'exception_message': f'taskhub: nsfw blocked ({detail})',
+                }]],
+            },
+            'meta': {'nsfw': verdict},
+        }
+
+    async def _nsfw_attach(self, real_pid: str, entry: Dict) -> Dict:
+        """history 轮询的 NSFW 组装点：等待检测完成 → 注入结论 /（block 模式）拦截。"""
+        assert self.nsfw is not None
+        ev = self._nsfw_events.get(real_pid)
+        if ev is not None and not ev.is_set():
+            try:
+                await asyncio.wait_for(ev.wait(), timeout=max(0.0, self.nsfw.wait_seconds))
+            except asyncio.TimeoutError:
+                logger.warning('[nsfw] wait verdict for %s timeout (%.0fs)',
+                               real_pid, self.nsfw.wait_seconds)
+        verdict = self._nsfw_results.get(real_pid)
+        if verdict is None:
+            verdict = {'available': False, 'error': 'nsfw verdict unavailable'}
+        if self.nsfw.mode == 'block' and verdict.get('action') == 'block':
+            logger.info('[nsfw] blocked history for %s (mode=block)', real_pid)
+            return self._nsfw_blocked_entry(real_pid, verdict)
+        entry = dict(entry)
+        entry['nsfw'] = verdict
+        return entry
+
     async def _watch(self, virtual_pid: str, real_pid: str,
                      sem: Optional[asyncio.Semaphore] = None):
         """轮询真实 /history 直至 real_pid 出图；结果回写到虚拟 pid；超时/丢失/异常标记 failed。
@@ -474,6 +685,22 @@ class ComfyAdapter:
                         logger.error('comfyui task %s execution error', real_pid)
                         self._finish(virtual_pid, 'failed', 500, 'comfyui execution error')
                     else:
+                        # NSFW：block 模式在终结前同步检测（拦截必须先于返回）；
+                        # label 模式转后台检测并先终结任务——CPU 推理十几秒/张，
+                        # 若占用单飞槽位会让下一个生图任务干等。
+                        if self.nsfw is not None:
+                            if self.nsfw.mode == 'block':
+                                verdict = await self._nsfw_check_entry(real_pid, entry)
+                                if verdict.get('action') == 'block':
+                                    self._finish(virtual_pid, 'failed', 451,
+                                                 f'nsfw blocked (level={verdict.get("level")}, '
+                                                 f'score={verdict.get("score")})')
+                                    return
+                            else:
+                                bg = asyncio.create_task(
+                                    self._nsfw_check_entry(real_pid, entry))
+                                self._nsfw_bg_tasks.add(bg)
+                                bg.add_done_callback(self._nsfw_bg_tasks.discard)
                         self._finish(virtual_pid, 'done', 200, '')
                     return
                 if ok and time.time() >= lost_check_at:
@@ -519,7 +746,12 @@ class ComfyAdapter:
                 try:
                     hist = json.loads(content)
                     if real in hist:
-                        content = json.dumps({prompt_id: hist[real]}).encode()
+                        entry = hist[real]
+                        if (self.nsfw is not None
+                                and (entry.get('status') or {}).get('status_str', 'success') == 'success'):
+                            # NSFW：等待检测完成再组装（block 模式违规图在此兜底拦截）
+                            entry = await self._nsfw_attach(real, entry)
+                        content = json.dumps({prompt_id: entry}).encode()
                 except Exception:  # noqa: BLE001
                     pass
             return status, content, ctype
@@ -556,4 +788,5 @@ class ComfyAdapter:
             'states': dict(self.states),
             'watching': list(self._tasks_by_real.keys()),
             'progress': self.progress_stream.snapshot() if self.progress_stream else None,
+            'nsfw': self.nsfw.status() if self.nsfw is not None else {'enabled': False},
         }

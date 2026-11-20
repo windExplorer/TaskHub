@@ -14,7 +14,7 @@ server:
   vram_cleanup_on_type_switch: true  # 任务类型切换（tts<->comfyui）后、执行新任务前先清理残留显存
   db_path: ./middle-station.db
   log_max_lines: 100
-  frontend_dir: ./frontend
+  frontend_dir: ./webui/dist  # React SPA 构建产物（源码在 webui/，npm run build 生成）
 
 tts:
   base_url: http://127.0.0.1:50002   # 真实 CosyVoice 后端（插件配置指向本中转站）
@@ -50,3 +50,14 @@ inspector:                           # 上游自检巡检（异常只告警；�
   history_hours: 24                  # 计算耗时基线用的历史窗口
   baseline_ttl: 300                  # 耗时基线缓存有效期（秒）
   system_stats_every: 3              # 每 N 轮巡检查一次上游 /system_stats（显存水位）
+
+nsfw:                                # 出图后自动送检 NSFW（独立服务 nsfw-check，X:/_WorkSpace/Mine/nsfw-check）
+  enabled: true                      # 总开关（ false = 完全关闭，零开销）
+  base_url: "http://127.0.0.1:8890"  # nsfw-check 服务地址（同机默认端口）
+  token: ""                          # nsfw-check 配置了 API_TOKEN 时填写
+  mode: "label"                      # label = 检测结论随 history 返回（entry['nsfw']），拦截交给调用方
+                                     # block = 违规图（action=block）不返回，插件直接收到「NSFW 拦截」失败
+  timeout: 25                        # 单次检测 HTTP 超时（秒）；CPU 推理建议 ≥ 25
+  wait_seconds: 15                   # 插件轮询 history 时等待检测完成的上限（秒）
+  output_dir: null                   # ComfyUI output 目录（如 "X:/ComfyUI/output"）。填写后以 file://
+                                     # 引用送检（同机不重复存图）；null 则由检测服务按 SAVE_MODE 落盘

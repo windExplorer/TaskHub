@@ -2,7 +2,7 @@
 
 **版本**：1.2  
 **Base URL**：`http://<host>:9000`（默认 `0.0.0.0:9000`）  
-**WebUI**：`/ui`　|　**API 文档网页版**：`/ui/api.html`　|　**Swagger**：`/docs`（FastAPI 自动生成）
+**WebUI**：`/ui`　|　**API 文档网页版**：`/ui/`（页签「API 文档」）　|　**Swagger**：`/docs`（FastAPI 自动生成）
 
 > 文档覆盖全部 HTTP 接口、WebSocket 与状态码语义。接口分四类：
 > ① TTS 标准接口（AstrBot 语音插件对接）② ComfyUI 标准接口（绘图插件对接）
@@ -526,7 +526,7 @@ with httpx.Client(timeout=15) as c:
 | 资源 | 位置 |
 | --- | --- |
 | WebUI 监控面板 | `/ui` |
-| API 文档网页版 | `/ui/api.html` |
+| API 文档网页版 | `/ui/`（页签「API 文档」） |
 | Swagger | `/docs`（FastAPI 自动生成） |
 | 计划文档 | `docs/middle-station-plan.md` |
 | 对接契约（TTS） | `docs/backend-api.md` |

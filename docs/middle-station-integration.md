@@ -130,7 +130,7 @@ pos = r.headers.get("X-Queue-Position")
 | `GET /config` | 当前生效配置 |
 | `WS /ws/monitor` `/ws/tasks` `/ws/logs` | 资源、任务、日志实时推送 |
 
-> 接口字段与语义的完整说明见 `docs/middle-station-api.md`；网页版：`/ui/api.html`。
+> 接口字段与语义的完整说明见 `docs/middle-station-api.md`；网页版：`/ui/`（页签「API 文档」）。
 
 ---
 

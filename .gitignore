@@ -14,3 +14,7 @@ tasks_export.json
 .vscode/
 .DS_Store
 Thumbs.db
+
+# WebUI（React SPA，源码在 webui/）
+webui/node_modules/
+webui/dist/

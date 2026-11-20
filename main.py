@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from adapters import BackendError, ComfyAdapter, TTSAdapter
+from adapters.nsfw import NsfwChecker
 from adapters.tts import clean_prompt_text
 from config import Config
 from inspector import UpstreamInspector
@@ -89,6 +90,7 @@ scheduler: Optional[Scheduler] = None
 storage: Optional[Storage] = None
 tts: Optional[TTSAdapter] = None
 comfy: Optional[ComfyAdapter] = None
+nsfw_checker: Optional[NsfwChecker] = None
 inspector: Optional[UpstreamInspector] = None
 broadcaster: Optional['WSBroadcaster'] = None
 log_buffer: Optional['LogBuffer'] = None
@@ -163,15 +165,18 @@ async def lifespan(app: FastAPI):
     await tts.start()
     comfy.start()                 # 订阅真实 ComfyUI 的进度事件（/ws）
     inspector.start()             # 上游自检巡检
-    logger.info('TaskHub up: http://%s:%s (tts=%s, comfyui=%s, client_id=%s)',
+    logger.info('TaskHub up: http://%s:%s (tts=%s, comfyui=%s, client_id=%s, nsfw=%s)',
                 cfg.server.host, cfg.server.port, cfg.tts.base_url,
-                cfg.comfyui.base_url, comfy.client_id)
+                cfg.comfyui.base_url, comfy.client_id,
+                f'{cfg.nsfw.mode}@{cfg.nsfw.base_url}' if nsfw_checker is not None else 'off')
     yield
     await inspector.stop()
     await tts.stop()
     await monitor.stop()
     await scheduler.stop()
     await comfy.close()
+    if nsfw_checker is not None:
+        await nsfw_checker.close()
     logger.info('TaskHub stopped')
 
 
@@ -200,6 +205,9 @@ async def _vram_cleanup_on_type_switch(prev_type: str, next_type: str):
         return
     if prev_type == 'comfyui' and cfg.comfyui.free_vram_on_type_switch:
         await comfy.free_vram()
+    # 显存托管联动：切离 comfyui 时顺带请 nsfw-check 也卸载模型（它与 ComfyUI 可能同卡）
+    if prev_type == 'comfyui' and nsfw_checker is not None:
+        await nsfw_checker.release()
 
 
 def _self_check() -> Dict:
@@ -601,9 +609,13 @@ def _register_routes(app: FastAPI):
         await websocket.accept()
         q = await broadcaster.subscribe()
         try:
+            # init 只发最近 300 条（内存中的任务有淘汰护栏，历史全量在 SQLite /tasks）
+            recent = sorted(
+                scheduler.tasks.values(), key=lambda t: t.created_at, reverse=True
+            )[:300]
             await websocket.send_json({
                 'event': 'init',
-                'tasks': [t.to_dict() for t in scheduler.tasks.values()],
+                'tasks': [t.to_dict() for t in recent],
             })
             while True:
                 try:
@@ -658,7 +670,7 @@ def _register_routes(app: FastAPI):
 # 应用工厂
 # ============================================================================
 def create_app(config_path: Optional[str] = None) -> FastAPI:
-    global cfg, monitor, scheduler, storage, tts, comfy, inspector, broadcaster, log_buffer, _app
+    global cfg, monitor, scheduler, storage, tts, comfy, inspector, broadcaster, log_buffer, _app, nsfw_checker
 
     _apply_log_filters()
 
@@ -679,7 +691,9 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     )
     storage = Storage(cfg.server.db_path)
     tts = TTSAdapter(cfg)
-    comfy = ComfyAdapter(cfg, scheduler)
+    # NSFW 送检：启用时出图成功后自动把结果图片发给 nsfw-check（label/block 模式见 NsfwConfig）
+    nsfw_checker = NsfwChecker(cfg.nsfw) if cfg.nsfw.enabled else None
+    comfy = ComfyAdapter(cfg, scheduler, nsfw=nsfw_checker)
     inspector = UpstreamInspector(cfg, scheduler, comfy, storage, tts=tts, monitor=monitor)
     broadcaster = WSBroadcaster()
     log_buffer = LogBuffer(cfg.server.log_max_lines)
