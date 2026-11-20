@@ -254,6 +254,7 @@ export interface NsfwUpstream {
   enabled?: boolean;
   base_url?: string;
   mode?: string;
+  prewarm?: boolean;
   reachable?: boolean;
   health?: {
     ok?: boolean;

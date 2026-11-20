@@ -117,6 +117,7 @@ class NsfwConfig:
     timeout: float = 25.0                      # 单次检测 HTTP 超时（秒）
     wait_seconds: float = 15.0                 # history 轮询等待检测完成的上限（秒）
     output_dir: str = ''                       # ComfyUI output 目录（可选）
+    prewarm: bool = True                       # 送检前预热模型，消除卸载后的冷启动（~4s -> ~0.45s）
 
 
 @dataclass
@@ -237,6 +238,7 @@ class Config:
         cfg.nsfw.wait_seconds = _env_float(
             'MIDDLE_NSFW_WAIT_SECONDS', float(n.get('wait_seconds', cfg.nsfw.wait_seconds)))
         cfg.nsfw.output_dir = _env('MIDDLE_NSFW_OUTPUT_DIR') or n.get('output_dir', cfg.nsfw.output_dir)
+        cfg.nsfw.prewarm = _env_bool('MIDDLE_NSFW_PREWARM', bool(n.get('prewarm', cfg.nsfw.prewarm)))
 
         return cfg
 
@@ -297,6 +299,7 @@ class Config:
                 'timeout': self.nsfw.timeout,
                 'wait_seconds': self.nsfw.wait_seconds,
                 'output_dir': self.nsfw.output_dir,
+                'prewarm': self.nsfw.prewarm,
             },
         }
 

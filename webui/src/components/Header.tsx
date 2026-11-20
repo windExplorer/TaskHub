@@ -2,6 +2,7 @@ import { motion } from "motion/react";
 import {
   Monitor as MonitorIcon,
   Moon,
+  Power,
   Settings,
   Sun,
   Waypoints,
@@ -11,6 +12,8 @@ import type { Monitor } from "../types";
 import type { ThemeMode } from "../hooks/useTheme";
 import { SC_META, THROTTLE_TEXT } from "../constants";
 import { fmt } from "../lib/ui";
+import { IconRadioGroup } from "./ui/RadioGroup";
+import { Tooltip } from "./ui/Tooltip";
 
 const spring = { type: "spring", stiffness: 420, damping: 32 } as const;
 
@@ -61,10 +64,10 @@ function Pill({ cls, title, children }: { cls: string; title?: string; children:
   );
 }
 
-const THEME_OPTS: Array<{ id: ThemeMode; icon: typeof Sun; label: string }> = [
-  { id: "light", icon: Sun, label: "浅色" },
-  { id: "dark", icon: Moon, label: "深色" },
-  { id: "system", icon: MonitorIcon, label: "跟随系统" },
+const THEME_OPTS: Array<{ value: ThemeMode; icon: typeof Sun; label: string }> = [
+  { value: "light", icon: Sun, label: "浅色" },
+  { value: "dark", icon: Moon, label: "深色" },
+  { value: "system", icon: MonitorIcon, label: "跟随系统" },
 ];
 
 export function Header({
@@ -75,6 +78,7 @@ export function Header({
   monitor,
   wsConnected,
   onOpenConfig,
+  onShutdown,
 }: {
   tab: TabId;
   onTab: (t: TabId) => void;
@@ -83,6 +87,7 @@ export function Header({
   monitor: Monitor | null;
   wsConnected: boolean;
   onOpenConfig: () => void;
+  onShutdown: () => void;
 }) {
   const reason = monitor?.throttle_reason ?? "normal";
   const overload = reason !== "normal";
@@ -140,47 +145,33 @@ export function Header({
             {wsConnected ? "实时已连接" : "重连中…"}
           </Pill>
 
-          <button
-            onClick={onOpenConfig}
-            className={`${PILL_BASE} border-line bg-surface-2 text-ink-2 transition-colors hover:border-line-strong hover:text-ink`}
-            title="查看当前配置"
-          >
-            <Settings size={12} className="mr-1 inline align-[-1px]" />
-            配置
-          </button>
+          <Tooltip content="查看当前配置">
+            <button
+              onClick={onOpenConfig}
+              className={`${PILL_BASE} border-line bg-surface-2 text-ink-2 transition-colors hover:border-line-strong hover:text-ink`}
+            >
+              <Settings size={12} className="mr-1 inline align-[-1px]" />
+              配置
+            </button>
+          </Tooltip>
 
-          {/* 主题三态切换（layoutId 胶囊滑动） */}
-          <div
-            role="radiogroup"
-            aria-label="主题"
-            className="flex items-center rounded-full border border-line bg-surface-2 p-1"
-          >
-            {THEME_OPTS.map((o) => {
-              const active = theme === o.id;
-              return (
-                <button
-                  key={o.id}
-                  role="radio"
-                  aria-checked={active}
-                  aria-label={o.label}
-                  title={o.label}
-                  onClick={() => onTheme(o.id)}
-                  className={`relative flex size-7 items-center justify-center rounded-full transition-colors ${
-                    active ? "text-on-accent" : "text-ink-3 hover:text-ink"
-                  }`}
-                >
-                  {active && (
-                    <motion.span
-                      layoutId="theme-pill"
-                      transition={spring}
-                      className="absolute inset-0 rounded-full bg-accent"
-                    />
-                  )}
-                  <o.icon size={14} className="relative z-10" />
-                </button>
-              );
-            })}
-          </div>
+          <Tooltip content="关闭 TaskHub 服务（页面将不可用）">
+            <button
+              onClick={onShutdown}
+              className={`${PILL_BASE} border-err/40 bg-err-bg text-err transition-colors hover:border-err`}
+            >
+              <Power size={12} className="mr-1 inline align-[-1px]" />
+              关闭服务
+            </button>
+          </Tooltip>
+
+          {/* 主题三态切换（Radix RadioGroup） */}
+          <IconRadioGroup
+            value={theme}
+            onValueChange={onTheme}
+            options={THEME_OPTS}
+            ariaLabel="主题"
+          />
         </div>
       </div>
 

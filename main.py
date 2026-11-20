@@ -92,6 +92,9 @@ cfg: Config = Config.load()
 _config_path: str = os.environ.get('MIDDLE_CONFIG', 'middle-station.yaml')
 _started_at: float = time.time()          # 进程启动时刻，前端据此判断重启是否完成
 _restarting: bool = False
+_root_dir: Path = Path(__file__).resolve().parent   # 仓库根目录（pid/日志放这里）
+_pid_file: Path = _root_dir / 'taskhub.pid'
+_log_file: Path = _root_dir / 'logs' / 'server.log'
 monitor: Optional[ResourceMonitor] = None
 scheduler: Optional[Scheduler] = None
 storage: Optional[Storage] = None
@@ -510,6 +513,7 @@ def _register_routes(app: FastAPI):
                 'mode': cfg.nsfw.mode,
                 'timeout': cfg.nsfw.timeout,
                 'wait_seconds': cfg.nsfw.wait_seconds,
+                'prewarm': cfg.nsfw.prewarm,
             },
             'started_at': _started_at,
         }
@@ -518,6 +522,23 @@ def _register_routes(app: FastAPI):
     async def config_raw_api():
         """全量可编辑配置（写回用）。"""
         return cfg.to_dict()
+
+    @app.post('/nsfw/warm')
+    async def nsfw_warm_api(force: int = 0):
+        """手动预热 nsfw-check 模型（调度控制，无需重启）。force=1 强制重载。"""
+        if nsfw_checker is None:
+            raise HTTPException(status_code=404, detail='nsfw checker is disabled')
+        ok = await nsfw_checker.warm(force=bool(force))
+        health = await nsfw_checker.probe(timeout=3.0)
+        return {'ok': ok, 'health': health}
+
+    @app.post('/nsfw/release')
+    async def nsfw_release_api():
+        """手动卸载 nsfw-check 模型、释放显存（调度控制，无需重启）。"""
+        if nsfw_checker is None:
+            raise HTTPException(status_code=404, detail='nsfw checker is disabled')
+        ok = await nsfw_checker.release()
+        return {'ok': ok}
 
     @app.put('/config')
     async def config_save(request: Request):
@@ -569,15 +590,10 @@ def _register_routes(app: FastAPI):
                 port = cfg.server.port
                 cmd = [sys.executable, str(Path(__file__).resolve()), 'start',
                        '--host', host, '--port', str(port), '--config', _config_path,
-                       '--wait-free']
-                creation = 0
-                if os.name == 'nt':
-                    creation = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
-                subprocess.Popen(cmd, cwd=str(Path(__file__).resolve().parent),
-                                 creationflags=creation,
-                                 stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                logger.info('[restart] spawned new process: %s', ' '.join(cmd))
+                       '--wait-free', '--tray']
+                pid = _spawn_detached(cmd, _log_file)
+                logger.info('[restart] spawned new process pid=%s: %s (log -> %s)',
+                            pid, ' '.join(cmd), _log_file)
             except Exception as e:  # noqa: BLE001
                 logger.warning('[restart] spawn failed: %s', e)
                 _restarting = False
@@ -586,6 +602,30 @@ def _register_routes(app: FastAPI):
 
         asyncio.create_task(_do_restart())
         return {'ok': True, 'restarting': True, 'old_started_at': _started_at}
+
+    @app.post('/shutdown')
+    async def shutdown_api():
+        """关闭服务（WebUI 用）：延迟退出当前进程。pid 文件由 stop 命令/下次启动清理。"""
+        async def _do_shutdown():
+            await asyncio.sleep(1.0)  # 让 HTTP 响应先返回
+            logger.info('[shutdown] service stopping via WebUI')
+            os._exit(0)
+
+        asyncio.create_task(_do_shutdown())
+        return {'ok': True, 'stopping': True}
+
+    @app.get('/logs/tail')
+    async def logs_tail(lines: int = 200):
+        """读取落盘日志最后 N 行（daemon/重启后的控制台输出），供 WebUI 历史回填。"""
+        lines = max(1, min(2000, lines))
+        if not _log_file.exists():
+            return {'file': str(_log_file), 'lines': []}
+        try:
+            with open(_log_file, 'r', encoding='utf-8', errors='replace') as f:
+                tail = deque(f, maxlen=lines)
+            return {'file': str(_log_file), 'lines': [x.rstrip('\r\n') for x in tail]}
+        except OSError as e:
+            return {'file': str(_log_file), 'lines': [], 'error': str(e)}
 
     @app.get('/queue')
     async def queue_api(limit: int = 100):
@@ -847,6 +887,21 @@ def cli():
     pass
 
 
+def _spawn_detached(cmd: list, log_file: Path) -> int:
+    """启动一个脱离终端的后台进程，stdout/stderr 追加到 log_file。返回子进程 pid。"""
+    creation = 0
+    if os.name == 'nt':
+        creation = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        log_fh = open(log_file, 'a', encoding='utf-8', buffering=1)
+    except OSError:
+        log_fh = subprocess.DEVNULL
+    proc = subprocess.Popen(cmd, cwd=str(_root_dir), creationflags=creation,
+                            stdin=subprocess.DEVNULL, stdout=log_fh, stderr=subprocess.STDOUT)
+    return proc.pid
+
+
 def _wait_port_free(host: str, port: int, timeout: float = 40.0) -> bool:
     """等待端口释放（自我重启时新进程用）。"""
     import socket
@@ -870,17 +925,114 @@ def _wait_port_free(host: str, port: int, timeout: float = 40.0) -> bool:
 @click.option('--port', default=None, type=int, help='listen port')
 @click.option('--config', default=None, type=click.Path(exists=False), help='config yaml path')
 @click.option('--reload', is_flag=True, help='auto reload on code change')
-@click.option('--wait-free', is_flag=True, help='wait until port is free before binding (self-restart)')
-def start(host, port, config, reload, wait_free):
-    """启动中转站服务。"""
+@click.option('--wait-free', is_flag=True, hidden=True, help='wait until port is free before binding (self-restart)')
+@click.option('--daemon', is_flag=True, help='run in background with tray icon (logs -> logs/server.log)')
+@click.option('--tray', is_flag=True, hidden=True, help='run tray icon in main thread (internal, used by --daemon)')
+def start(host, port, config, reload, wait_free, daemon, tray):
+    """启动中转站服务（--daemon 后台常驻 + 托盘；默认前台运行）。"""
     app = create_app(config)
     h = host or cfg.server.host
     p = port or cfg.server.port
+
+    if daemon:
+        # 后台模式：spawn 一个不带 --daemon 但带 --tray 的子进程（避免递归）。
+        # 托盘图标必须在子进程主线程运行，uvicorn 放子线程。
+        if not _wait_port_free(h, p):
+            click.echo(f'port {h}:{p} still busy, abort daemon start')
+            return
+        child_cmd = [sys.executable, str(Path(__file__).resolve()), 'start',
+                     '--host', h, '--port', str(p), '--config', config or _config_path,
+                     '--wait-free', '--tray']
+        if reload:
+            child_cmd.append('--reload')
+        child_pid = _spawn_detached(child_cmd, _log_file)
+        click.echo(f'TaskHub started in background (pid={child_pid}).')
+        click.echo(f'  log:  {_log_file}')
+        click.echo(f'  stop: python main.py stop  (or run stop.bat / tray 退出)')
+        return
+
     if wait_free and not _wait_port_free(h, p):
         logger.error('port %s:%s still busy after wait, abort start', h, p)
         return
-    logger.info('starting TaskHub on %s:%s', h, p)
-    uvicorn.run(app, host=h, port=p, reload=reload, access_log=False, log_level='info')
+    # 写 PID：无论从终端脚本启动还是 WebUI 重启拉起，pid 文件始终指向当前进程。
+    try:
+        _pid_file.write_text(str(os.getpid()), encoding='utf-8')
+    except OSError as e:
+        logger.warning('write pid file failed: %s', e)
+    logger.info('starting TaskHub on %s:%s (pid=%s, tray=%s)', h, p, os.getpid(), tray)
+
+    def cleanup_pid():
+        try:
+            if _pid_file.exists() and _pid_file.read_text(encoding='utf-8').strip() == str(os.getpid()):
+                _pid_file.unlink()
+        except OSError:
+            pass
+
+    if tray:
+        # 托盘模式：uvicorn 在子线程，主线程跑托盘图标；点退出 → should_exit + icon.stop。
+        try:
+            from tray import run_tray
+        except ImportError as e:
+            logger.warning('tray unavailable (%s), falling back to headless daemon', e)
+            try:
+                uvicorn.run(app, host=h, port=p, reload=reload, access_log=False, log_level='info')
+            finally:
+                cleanup_pid()
+            return
+
+        uvicorn_cfg = uvicorn.Config(app, host=h, port=p, reload=reload,
+                                     access_log=False, log_level='info')
+        server = uvicorn.Server(uvicorn_cfg)
+
+        def serve():
+            server.run()
+
+        t = threading.Thread(target=serve, name='uvicorn', daemon=True)
+        t.start()
+
+        def on_quit():
+            server.should_exit = True
+
+        try:
+            run_tray(h, p, on_quit)
+        finally:
+            server.should_exit = True
+            t.join(timeout=8)
+            cleanup_pid()
+        return
+
+    try:
+        uvicorn.run(app, host=h, port=p, reload=reload, access_log=False, log_level='info')
+    finally:
+        # 正常退出时清理 PID（os._exit 的重启路径不走这里，由新进程覆盖）
+        cleanup_pid()
+
+
+@cli.command('stop')
+def stop_cmd():
+    """停止 TaskHub（读取 taskhub.pid 终止进程及其子进程树）。"""
+    if not _pid_file.exists():
+        click.echo('no pid file found; is TaskHub running?')
+        return
+    try:
+        pid = int(_pid_file.read_text(encoding='utf-8').strip())
+    except (ValueError, OSError) as e:
+        click.echo(f'invalid pid file: {e}')
+        return
+    try:
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/PID', str(pid), '/T', '/F'], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            os.kill(pid, 15)  # SIGTERM
+        click.echo(f'stopped TaskHub pid={pid}')
+    except Exception as e:  # noqa: BLE001
+        click.echo(f'stop failed: {e}')
+    finally:
+        try:
+            _pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 @cli.command('status')

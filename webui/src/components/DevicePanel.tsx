@@ -1,5 +1,7 @@
+import { useState } from "react";
 import {
   Activity,
+  Flame,
   Gauge,
   HardDrive,
   Image as ImageIcon,
@@ -11,6 +13,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { nsfwRelease, nsfwWarm } from "../api";
+import { Tooltip } from "./ui/Tooltip";
 import { fmt, fmtClock, fmtTime, fmtUptime } from "../lib/ui";
 import { useDevice } from "../hooks/useDevice";
 import type {
@@ -356,9 +360,27 @@ function TtsService({ c }: { c: CosyUpstream }) {
   );
 }
 
-function NsfwService({ n }: { n: NsfwUpstream }) {
+function NsfwService({ n, onChanged }: { n: NsfwUpstream; onChanged: () => void }) {
   const h = n.health;
   const state = !n.enabled ? "未启用" : n.reachable ? "在线" : "不可访问";
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const loaded = !!(h?.main_loaded && h?.aux_loaded);
+
+  const act = async (kind: "warm" | "release") => {
+    setBusy(true);
+    setMsg("");
+    try {
+      const r = kind === "warm" ? await nsfwWarm() : await nsfwRelease();
+      setMsg(r.ok ? (kind === "warm" ? "预热完成" : "已卸载") : "操作失败");
+      onChanged();
+    } catch {
+      setMsg("操作失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <ServiceCard
       icon={ShieldCheck}
@@ -369,6 +391,7 @@ function NsfwService({ n }: { n: NsfwUpstream }) {
       accent="var(--warn)"
     >
       <Kv label="送检模式" value={n.mode ?? "–"} title="label=随 history 返回结果；block=违规图直接拦截" />
+      <Kv label="送检前预热" value={n.prewarm ? "开" : "关"} title="送检前自动预热模型，消除卸载后的冷启动" />
       {n.enabled && n.reachable && h ? (
         <>
           <Kv label="服务版本" value={h.version ?? "–"} />
@@ -384,6 +407,34 @@ function NsfwService({ n }: { n: NsfwUpstream }) {
       ) : (
         <div className="py-1 text-ink-3">
           {n.enabled ? "未收到 /healthz 响应（送检会自动降级，不阻断出图）" : "配置未启用，零开销"}
+        </div>
+      )}
+      {n.enabled && n.reachable && (
+        <div className="mt-2 flex items-center gap-2 border-t border-line pt-2">
+          <Tooltip content={loaded ? "模型已加载" : "手动加载/预热模型"}>
+            <button
+              type="button"
+              disabled={busy || loaded}
+              onClick={() => void act("warm")}
+              className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-ink-2 transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Flame size={12} />
+              预热
+            </button>
+          </Tooltip>
+          <Tooltip content={loaded ? "卸载模型释放显存" : "模型未加载"}>
+            <button
+              type="button"
+              disabled={busy || !loaded}
+              onClick={() => void act("release")}
+              className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-ink-2 transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <RefreshCw size={12} />
+              卸载
+            </button>
+          </Tooltip>
+          {busy && <span className="text-[10px] text-ink-3">处理中…</span>}
+          {!busy && msg && <span className="text-[10px] text-ink-3">{msg}</span>}
         </div>
       )}
     </ServiceCard>
@@ -414,13 +465,14 @@ export function DevicePanel() {
                   : "")
               : "加载中…"}
           </span>
-          <button
-            onClick={() => void refresh()}
-            title="立即刷新"
-            className="rounded-full border border-line p-1.5 text-ink-3 transition-colors hover:border-line-strong hover:text-ink"
-          >
-            <RefreshCw size={13} />
-          </button>
+          <Tooltip content="立即刷新">
+            <button
+              onClick={() => void refresh()}
+              className="rounded-full border border-line p-1.5 text-ink-3 transition-colors hover:border-line-strong hover:text-ink"
+            >
+              <RefreshCw size={13} />
+            </button>
+          </Tooltip>
         </div>
       </div>
 
@@ -450,7 +502,7 @@ export function DevicePanel() {
             <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
               <ComfyService c={up.comfyui ?? {}} />
               <TtsService c={up.cosyvoice ?? {}} />
-              <NsfwService n={up.nsfw ?? {}} />
+              <NsfwService n={up.nsfw ?? {}} onChanged={() => void refresh()} />
             </div>
           ) : (
             <div className="text-xs text-ink-3">加载中…</div>

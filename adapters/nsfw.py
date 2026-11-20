@@ -20,6 +20,9 @@ class NsfwChecker:
         self.timeout = float(cfg.timeout)
         self.wait_seconds = float(cfg.wait_seconds)
         self.output_dir = str(cfg.output_dir or '')
+        # 调度控制：送检前预热模型（消除卸载后的冷启动，实测 ~4s -> ~0.45s）
+        self.prewarm = bool(getattr(cfg, 'prewarm', True))
+        self._warm_lock = None  # 延迟创建（绑定事件循环）
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=5.0, read=self.timeout + 10.0, write=30.0, pool=5.0))
 
@@ -68,6 +71,38 @@ class NsfwChecker:
     async def close(self):
         await self._client.aclose()
 
+    def _get_warm_lock(self):
+        """预热去重：同进程多个送检并发时只预热一次。"""
+        if self._warm_lock is None:
+            import asyncio
+            self._warm_lock = asyncio.Lock()
+        return self._warm_lock
+
+    async def warm(self, force: bool = False) -> bool:
+        """请 nsfw-check 预热/加载模型（POST /models/load）。
+
+        非 force 时先探测：两模型都 loaded 就跳过，避免无谓开销。
+        失败一律降级为 False，绝不阻塞送检主流程。
+        """
+        if not force:
+            health = await self.probe(timeout=2.0)
+            if isinstance(health, dict) and health.get('main_loaded') and health.get('aux_loaded'):
+                return True
+        lock = self._get_warm_lock()
+        async with lock:
+            try:
+                r = await self._client.post(f'{self.base_url}/models/load',
+                                            headers=self._headers(), timeout=self.timeout + 10.0)
+                ok = r.status_code == 200
+                if ok:
+                    logger.info('[nsfw] models prewarmed')
+                else:
+                    logger.warning('[nsfw] warm http %s: %s', r.status_code, r.text[:200])
+                return ok
+            except Exception as e:  # noqa: BLE001
+                logger.warning('[nsfw] warm failed: %s', e)
+                return False
+
     async def release(self) -> bool:
         """请 nsfw-check 卸载模型（显存托管联动：切离 comfyui 任务时调用）。"""
         try:
@@ -84,7 +119,8 @@ class NsfwChecker:
             return False
 
     def status(self) -> dict:
-        return {'enabled': True, 'base_url': self.base_url, 'mode': self.mode}
+        return {'enabled': True, 'base_url': self.base_url, 'mode': self.mode,
+                'prewarm': self.prewarm}
 
     async def probe(self, timeout: float = 3.0) -> Optional[dict]:
         """探测 nsfw-check 健康状态（GET /healthz）；失败返回 None，绝不抛异常。

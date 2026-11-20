@@ -9,6 +9,7 @@ import { TasksPage } from "./components/TasksPage";
 import { StatsPage } from "./components/StatsPage";
 import { ApiDocsPage } from "./components/ApiDocsPage";
 import { ConfigDialog } from "./components/ConfigDialog";
+import { ShutdownDialog } from "./components/ShutdownDialog";
 import { ToastContainer, useToasts } from "./components/Toast";
 
 export default function App() {
@@ -17,6 +18,7 @@ export default function App() {
   const { toasts, push, dismiss } = useToasts();
   const [tab, setTab] = useState<TabId>("dash");
   const [configOpen, setConfigOpen] = useState(false);
+  const [shutdownOpen, setShutdownOpen] = useState(false);
 
   return (
     <div className="relative min-h-dvh">
@@ -45,6 +47,7 @@ export default function App() {
         monitor={monitor}
         wsConnected={connected}
         onOpenConfig={() => setConfigOpen(true)}
+        onShutdown={() => setShutdownOpen(true)}
       />
 
       <main className="mx-auto max-w-7xl px-4 pb-16 pt-6 sm:px-6 sm:pt-8">
@@ -61,6 +64,7 @@ export default function App() {
       </footer>
 
       <ConfigDialog open={configOpen} onClose={() => setConfigOpen(false)} />
+      <ShutdownDialog open={shutdownOpen} onClose={() => setShutdownOpen(false)} push={push} />
       <ToastContainer toasts={toasts} onDismiss={dismiss} />
     </div>
   );

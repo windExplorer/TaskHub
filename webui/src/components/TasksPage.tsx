@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { ApiFailure, fetchTasks } from "../api";
-import { STATUS_META, TYPE_META, btnCls, btnPrimaryCls, inputCls, selectCls } from "../constants";
+import { STATUS_META, TYPE_META, btnCls, btnPrimaryCls, inputCls } from "../constants";
+import { Select } from "./ui/Select";
 import { fmt, fmtTimeFull } from "../lib/ui";
 import type { TasksPageData } from "../types";
 import { Card } from "./Card";
@@ -72,24 +73,30 @@ export function TasksPage() {
       {/* 筛选区 */}
       <Card className="p-4">
         <div className="flex flex-wrap items-end gap-3">
-          <label className="block">
+          <div className="block">
             <span className="mb-1 block text-[11px] text-ink-3">任务类型</span>
-            <select value={type} onChange={(e) => onType(e.target.value)} className={selectCls}>
-              <option value="">全部</option>
-              {Object.entries(TYPE_META).map(([k, m]) => (
-                <option key={k} value={k}>{m.label}</option>
-              ))}
-            </select>
-          </label>
-          <label className="block">
+            <Select
+              value={type}
+              onValueChange={onType}
+              className="w-32"
+              options={[
+                { value: "", label: "全部" },
+                ...Object.entries(TYPE_META).map(([k, m]) => ({ value: k, label: m.label })),
+              ]}
+            />
+          </div>
+          <div className="block">
             <span className="mb-1 block text-[11px] text-ink-3">状态</span>
-            <select value={status} onChange={(e) => onStatus(e.target.value)} className={selectCls}>
-              <option value="">全部</option>
-              {Object.entries(STATUS_META).map(([k, m]) => (
-                <option key={k} value={k}>{m.label}</option>
-              ))}
-            </select>
-          </label>
+            <Select
+              value={status}
+              onValueChange={onStatus}
+              className="w-32"
+              options={[
+                { value: "", label: "全部" },
+                ...Object.entries(STATUS_META).map(([k, m]) => ({ value: k, label: m.label })),
+              ]}
+            />
+          </div>
           <label className="block w-full sm:min-w-[220px] sm:flex-1">
             <span className="mb-1 block text-[11px] text-ink-3">关键词（任务ID / 错误信息）</span>
             <input
@@ -112,18 +119,15 @@ export function TasksPage() {
           <span className="text-xs text-ink-3">共 {data?.total ?? 0} 条</span>
           <label className="flex items-center gap-2 text-xs text-ink-2">
             每页
-            <select
-              value={pageSize}
-              onChange={(e) => {
-                setPageSize(parseInt(e.target.value, 10) || 20);
+            <Select
+              value={String(pageSize)}
+              onValueChange={(v) => {
+                setPageSize(parseInt(v, 10) || 20);
                 setPage(1);
               }}
-              className={selectCls}
-            >
-              {[10, 20, 50, 100].map((v) => (
-                <option key={v} value={v}>{v} 条</option>
-              ))}
-            </select>
+              className="w-20"
+              options={[10, 20, 50, 100].map((v) => ({ value: String(v), label: `${v} 条` }))}
+            />
           </label>
         </div>
 

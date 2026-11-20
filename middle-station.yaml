@@ -61,3 +61,5 @@ nsfw:                                # 出图后自动送检 NSFW（独立服务
   wait_seconds: 15                   # 插件轮询 history 时等待检测完成的上限（秒）
   output_dir: null                   # ComfyUI output 目录（如 "X:/ComfyUI/output"）。填写后以 file://
                                      # 引用送检（同机不重复存图）；null 则由检测服务按 SAVE_MODE 落盘
+  prewarm: true                      # 送检前预热 nsfw-check 模型（消除卸载后的冷启动 ~4s -> ~0.45s；
+                                     # 已 loaded 会跳过。WebUI 设备面板也可手动 预热/卸载）

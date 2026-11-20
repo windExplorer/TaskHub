@@ -133,6 +133,18 @@ export async function saveConfig(data: Record<string, Record<string, unknown>>):
   }, 15_000);
 }
 
+// ---------- NSFW 调度控制 ----------
+
+/** 预热 nsfw-check 模型（force=true 强制重载）。 */
+export async function nsfwWarm(force = false): Promise<{ ok: boolean }> {
+  return request(`/nsfw/warm${qs({ force: force ? 1 : 0 })}`, { method: "POST" }, 120_000);
+}
+
+/** 卸载 nsfw-check 模型、释放显存。 */
+export async function nsfwRelease(): Promise<{ ok: boolean }> {
+  return request("/nsfw/release", { method: "POST" }, 30_000);
+}
+
 export interface HealthResp {
   status: string;
   started_at?: number;
@@ -145,4 +157,14 @@ export async function fetchHealth(): Promise<HealthResp> {
 /** 触发服务重启（连接会中断，调用方需容错网络错误） */
 export async function restartService(): Promise<{ ok: boolean; restarting: boolean; old_started_at?: number }> {
   return request("/restart", { method: "POST" }, 10_000);
+}
+
+/** 关闭服务（连接会中断） */
+export async function shutdownService(): Promise<{ ok: boolean; stopping: boolean }> {
+  return request("/shutdown", { method: "POST" }, 10_000);
+}
+
+/** 落盘日志尾部（历史回填） */
+export async function fetchLogsTail(lines = 200): Promise<{ file: string; lines: string[]; error?: string }> {
+  return request(`/logs/tail${qs({ lines })}`, { method: "GET" }, 10_000);
 }

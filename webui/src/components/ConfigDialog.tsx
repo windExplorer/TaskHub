@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { motion } from "motion/react";
+import * as RDialog from "@radix-ui/react-dialog";
 import { Check, Loader2, RotateCw, X } from "lucide-react";
 
 import { fetchConfigRaw, fetchHealth, restartService, saveConfig } from "../api";
 import type { ConfigSection } from "../types";
+import { Switch } from "./ui/Switch";
 
 const spring = { type: "spring", stiffness: 340, damping: 30 } as const;
 
@@ -67,6 +69,7 @@ const SECTIONS: Array<{ key: string; title: string; fields: Field[] }> = [
       ["enabled", "启用", "bool"], ["base_url", "检测服务地址", "str"],
       ["mode", "模式(label/block)", "str"], ["timeout", "检测超时(s)", "num"],
       ["wait_seconds", "等待检测(s)", "num"], ["output_dir", "ComfyUI output 目录", "str"],
+      ["prewarm", "送检前预热", "bool"],
     ],
   },
 ];
@@ -87,15 +90,7 @@ function FieldRow({
     return (
       <div className="flex items-center justify-between gap-3 border-b border-line py-1.5">
         <span className="text-ink-2">{label}</span>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={on}
-          onClick={() => onChange(!on)}
-          className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${on ? "bg-accent" : "bg-line-strong"}`}
-        >
-          <span className={`absolute top-0.5 size-4 rounded-full bg-white transition-all ${on ? "left-4.5" : "left-0.5"}`} />
-        </button>
+        <Switch checked={on} onCheckedChange={onChange} ariaLabel={label} />
       </div>
     );
   }
@@ -199,39 +194,38 @@ export function ConfigDialog({ open, onClose }: { open: boolean; onClose: () => 
   }
 
   return (
-    <AnimatePresence>
-      {open && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.18 }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) onClose();
-          }}
-        >
+    <RDialog.Root open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <RDialog.Portal>
+        <RDialog.Overlay asChild>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.18 }}
+            className="fixed inset-0 z-50 bg-black/45 p-4"
+          />
+        </RDialog.Overlay>
+        <RDialog.Content asChild aria-describedby={undefined} onEscapeKeyDown={(e) => { if (restarting) e.preventDefault(); }}>
           <motion.div
             initial={{ opacity: 0, scale: 0.95, y: 12 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 12 }}
             transition={spring}
-            className="theme-t flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-card"
+            className="theme-t fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[calc(100%-2rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-card outline-none"
           >
             <div className="flex items-center justify-between border-b border-line px-6 py-4">
               <div>
-                <h2 className="text-base font-semibold text-ink">配置</h2>
-                <p className="mt-0.5 text-[11px] text-ink-3">
+                <RDialog.Title className="text-base font-semibold text-ink">配置</RDialog.Title>
+                <RDialog.Description className="mt-0.5 text-[11px] text-ink-3">
                   业务开关即时生效；其余字段保存后需重启服务生效
-                </p>
+                </RDialog.Description>
               </div>
-              <button
-                onClick={onClose}
-                aria-label="关闭"
-                className="rounded-full p-1.5 text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink"
-              >
-                <X size={16} />
-              </button>
+              <RDialog.Close asChild>
+                <button
+                  aria-label="关闭"
+                  className="rounded-full p-1.5 text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink"
+                >
+                  <X size={16} />
+                </button>
+              </RDialog.Close>
             </div>
 
             <div className="scroll-thin flex-1 overflow-y-auto px-6 py-4 text-[13px]">
@@ -264,21 +258,17 @@ export function ConfigDialog({ open, onClose }: { open: boolean; onClose: () => 
                           <span className="font-medium text-ink-2">
                             {t === "tts" ? "TTS 语音" : "ComfyUI 绘图"}
                           </span>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={cur}
-                            onClick={() => {
+                          <Switch
+                            checked={cur}
+                            onCheckedChange={() => {
                               const next = { ...(draft.server?.tasks_enabled ?? {}), [t]: !cur };
                               const nextDraft = { ...draft, server: { ...draft.server, tasks_enabled: next } };
                               setDraft(nextDraft);
                               setSaved(false);
                               void handleSave(nextDraft);
                             }}
-                            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${cur ? "bg-accent" : "bg-line-strong"}`}
-                          >
-                            <span className={`absolute top-0.5 size-4 rounded-full bg-white transition-all ${cur ? "left-4.5" : "left-0.5"}`} />
-                          </button>
+                            ariaLabel={t === "tts" ? "TTS 语音任务" : "ComfyUI 绘图任务"}
+                          />
                         </div>
                       );
                     })}
@@ -329,8 +319,8 @@ export function ConfigDialog({ open, onClose }: { open: boolean; onClose: () => 
               </span>
             </div>
           </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+        </RDialog.Content>
+      </RDialog.Portal>
+    </RDialog.Root>
   );
 }

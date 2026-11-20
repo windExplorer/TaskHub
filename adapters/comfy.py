@@ -570,6 +570,10 @@ class ComfyAdapter:
             if not images:
                 return verdict
 
+            # 调度控制：送检前预热模型，消除卸载后的冷启动（warm 内部会跳过已 loaded 的情况）
+            if self.nsfw.prewarm:
+                await self.nsfw.warm()
+
             async def _one(img: Dict) -> Optional[Dict]:
                 try:
                     r = await self._client.get(

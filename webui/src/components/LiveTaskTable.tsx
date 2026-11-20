@@ -3,7 +3,9 @@ import { AnimatePresence, motion } from "motion/react";
 import { ArrowUp, X } from "lucide-react";
 
 import { ApiFailure, cancelTask, promoteTask } from "../api";
-import { SHOW_OPTIONS, selectCls } from "../constants";
+import { SHOW_OPTIONS } from "../constants";
+import { Select } from "./ui/Select";
+import { Tooltip } from "./ui/Tooltip";
 import { fmt, fmtTime } from "../lib/ui";
 import { useWsTasks } from "../hooks/useWsTasks";
 import type { ToastPush } from "./toastTypes";
@@ -64,20 +66,15 @@ export function LiveTaskTable({ push }: { push: ToastPush }) {
         <span className="text-[11px] text-ink-3">
           共 {total} 个（显示 {visible.length}）
         </span>
-        <label className="flex items-center gap-2 text-[11px] text-ink-3">
+        <div className="flex items-center gap-2 text-[11px] text-ink-3">
           默认展示
-          <select
-            value={defaultShow}
-            onChange={(e) => changeShow(parseInt(e.target.value, 10))}
-            className={selectCls}
-          >
-            {SHOW_OPTIONS.map((v) => (
-              <option key={v} value={v}>
-                {v} 条
-              </option>
-            ))}
-          </select>
-        </label>
+          <Select
+            value={String(defaultShow)}
+            onValueChange={(v) => changeShow(parseInt(v, 10))}
+            className="w-20"
+            options={SHOW_OPTIONS.map((v) => ({ value: String(v), label: `${v} 条` }))}
+          />
+        </div>
       </div>
       <div className="overflow-x-auto scroll-thin">
         <table className="w-full min-w-[760px] text-sm">
@@ -142,20 +139,22 @@ export function LiveTaskTable({ push }: { push: ToastPush }) {
                       <div className="flex items-center justify-end gap-1">
                         {canAct && (
                           <>
-                            <button
-                              onClick={() => void act(t.task_id, "promote")}
-                              title="插队到最前"
-                              className="inline-flex items-center gap-0.5 rounded-md border border-line px-2 py-1 text-xs text-ink-2 transition-colors hover:border-accent/40 hover:text-accent"
-                            >
-                              <ArrowUp size={12} /> 插队
-                            </button>
-                            <button
-                              onClick={() => void act(t.task_id, "cancel")}
-                              title="取消任务"
-                              className="rounded-md border border-line p-1.5 text-ink-2 transition-colors hover:border-err/40 hover:text-err"
-                            >
-                              <X size={12} />
-                            </button>
+                            <Tooltip content="插队到最前">
+                              <button
+                                onClick={() => void act(t.task_id, "promote")}
+                                className="inline-flex items-center gap-0.5 rounded-md border border-line px-2 py-1 text-xs text-ink-2 transition-colors hover:border-accent/40 hover:text-accent"
+                              >
+                                <ArrowUp size={12} /> 插队
+                              </button>
+                            </Tooltip>
+                            <Tooltip content="取消任务">
+                              <button
+                                onClick={() => void act(t.task_id, "cancel")}
+                                className="rounded-md border border-line p-1.5 text-ink-2 transition-colors hover:border-err/40 hover:text-err"
+                              >
+                                <X size={12} />
+                              </button>
+                            </Tooltip>
                           </>
                         )}
                         {t.error && (

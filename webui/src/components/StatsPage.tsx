@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { ApiFailure, fetchStatsDetail } from "../api";
-import { CHART, STATUS_COLOR, STATUS_META, TYPE_COLOR, TYPE_META, selectCls } from "../constants";
+import { CHART, STATUS_COLOR, STATUS_META, TYPE_COLOR, TYPE_META } from "../constants";
+import { Select } from "./ui/Select";
 import { fmt, fmtAxis } from "../lib/ui";
 import type { StatsDetail } from "../types";
 import { Card } from "./Card";
@@ -101,16 +102,13 @@ export function StatsPage() {
         <Card delay={0.18} className="p-5 lg:col-span-2">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-medium text-ink-2">任务量趋势</h2>
-            <select
-              value={hours}
-              onChange={(e) => setHours(parseInt(e.target.value, 10) || 24)}
-              className={selectCls}
-              aria-label="统计时间范围"
-            >
-              {RANGES.map((r) => (
-                <option key={r.v} value={r.v}>{r.label}</option>
-              ))}
-            </select>
+            <Select
+              value={String(hours)}
+              onValueChange={(v) => setHours(parseInt(v, 10) || 24)}
+              ariaLabel="统计时间范围"
+              className="w-32"
+              options={RANGES.map((r) => ({ value: String(r.v), label: r.label }))}
+            />
           </div>
           <LineChart
             height={240}
