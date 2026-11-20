@@ -20,10 +20,10 @@ if errorlevel 1 (
 rem ---------- 2. build frontend if dist missing ----------
 echo [2/4] checking WebUI build (webui\dist)...
 if not exist "webui\dist\index.html" (
-    echo [info] webui/dist not found, building frontend (npm install + npm run build)...
+    echo [info] webui/dist not found, building frontend with npm install + npm run build...
     where npm >nul 2>&1
     if errorlevel 1 (
-        echo [ERROR] npm not found. Install Node.js, or copy webui\dist from an existing install.
+        echo [ERROR] npm not found. Install Node.js, or copy webui\dist from an existing install
         pause
         exit /b 1
     )
