@@ -1,10 +1,26 @@
-import { RefreshCw } from "lucide-react";
+import {
+  Activity,
+  Gauge,
+  HardDrive,
+  Image as ImageIcon,
+  RefreshCw,
+  Server,
+  ShieldCheck,
+  Thermometer,
+  Volume2,
+  type LucideIcon,
+} from "lucide-react";
 
 import { fmt, fmtClock, fmtTime, fmtUptime } from "../lib/ui";
 import { useDevice } from "../hooks/useDevice";
-import type { ComfyUpstream, CosyUpstream, DeviceHost, GpuInfo } from "../types";
+import type {
+  ComfyUpstream,
+  CosyUpstream,
+  DeviceHost,
+  NsfwUpstream,
+} from "../types";
 
-/** 设备面板（GET /device 每 10s 自动刷新）：本机 / ComfyUI / CosyVoice 三 pane。 */
+/** 设备面板（GET /device 每 10s 自动刷新）：本机硬件小卡片 + 三个同级业务服务卡。 */
 
 function Meter({ pct, color }: { pct: number | null | undefined; color: string }) {
   const p = Math.max(0, Math.min(100, Number(pct) || 0));
@@ -20,7 +36,7 @@ function Meter({ pct, color }: { pct: number | null | undefined; color: string }
 
 function Kv({ label, value, title }: { label: string; value: React.ReactNode; title?: string }) {
   return (
-    <div className="flex items-center justify-between gap-2 border-b border-line py-1">
+    <div className="flex items-center justify-between gap-2 border-b border-line py-1 last:border-b-0">
       <span className="shrink-0 text-ink-3">{label}</span>
       <span className="truncate text-right font-mono text-[11px] text-ink-2" title={title ?? String(value)}>
         {value === null || value === undefined || value === "" ? "–" : value}
@@ -29,22 +45,87 @@ function Kv({ label, value, title }: { label: string; value: React.ReactNode; ti
   );
 }
 
-function Dot({ ok, text }: { ok: boolean; text: string }) {
+/** 本机硬件小卡片：图标 + 标签 + 主值 + 副行 + 可选水位条 */
+function MiniCard({
+  icon: Icon,
+  label,
+  value,
+  sub,
+  meter,
+  title,
+  wrap = false,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: React.ReactNode;
+  sub?: React.ReactNode;
+  meter?: { pct: number; color: string };
+  title?: string;
+  wrap?: boolean;
+}) {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 text-[11px] ${ok ? "text-ok" : "text-err"}`}
-    >
-      <span className={`size-1.5 rounded-full ${ok ? "bg-ok" : "bg-err"}`} />
-      {text}
-    </span>
+    <div className="rounded-xl border border-line/70 bg-surface-2/60 p-3">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-ink-3">
+        <Icon size={13} className="shrink-0" />
+        <span className="truncate" title={label}>
+          {label}
+        </span>
+      </div>
+      <div
+        className={`tnum font-mono text-sm text-ink ${wrap ? "break-words leading-snug" : "truncate"}`}
+        title={title ?? (typeof value === "string" ? value : undefined)}
+      >
+        {value}
+      </div>
+      {sub && (
+        <div className={`mt-0.5 text-[10px] text-ink-3 ${wrap ? "break-words leading-snug" : "truncate"}`}>
+          {sub}
+        </div>
+      )}
+      {meter && <Meter pct={meter.pct} color={meter.color} />}
+    </div>
   );
 }
 
-function PaneTitle({ text, right }: { text: string; right?: string }) {
+/** 业务服务卡：三张同级，图标色块 + 名称 + 状态点 + 详情 */
+function ServiceCard({
+  icon: Icon,
+  name,
+  caption,
+  state,
+  ok,
+  accent,
+  children,
+}: {
+  icon: LucideIcon;
+  name: string;
+  caption?: string;
+  state: string;
+  /** null = 未启用（灰点） */
+  ok: boolean | null;
+  accent: string;
+  children: React.ReactNode;
+}) {
+  const dot = ok === null ? "var(--mute)" : ok ? "var(--ok)" : "var(--err)";
   return (
-    <div className="mb-2 flex items-center justify-between">
-      <span className="text-xs font-semibold uppercase tracking-wider text-accent">{text}</span>
-      <span className="text-[11px] text-ink-3">{right ?? ""}</span>
+    <div className="rounded-xl border border-line/70 bg-surface-2/60 p-3">
+      <div className="mb-2 flex items-center gap-2 border-b border-dashed border-line pb-2">
+        <span
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg"
+          style={{ background: `color-mix(in oklch, ${accent} 14%, transparent)`, color: accent }}
+        >
+          <Icon size={15} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-xs font-semibold text-ink-2">{name}</div>
+          {caption && <div className="truncate text-[10px] text-ink-3">{caption}</div>}
+        </div>
+        <span className="flex shrink-0 items-center gap-1 text-[10px]" style={{ color: dot }}>
+          <span className="size-1.5 rounded-full" style={{ background: dot }} />
+          {state}
+        </span>
+      </div>
+      <div className="text-[11px]">{children}</div>
     </div>
   );
 }
@@ -59,68 +140,41 @@ interface OsInfo {
   install_time?: number;
 }
 
-function gpuBlock(g: GpuInfo) {
-  const util = Number(g.util_percent) || 0;
-  const memPct = Number(g.mem_percent) || 0;
-  const utilCol = util > 80 ? "var(--err)" : "var(--accent-2)";
-  const memCol = memPct > 90 ? "var(--err)" : "var(--info)";
-  const ext = [
-    g.temperature_c !== undefined && g.temperature_c !== null ? `温度 ${g.temperature_c}°C` : null,
-    g.power_w !== undefined && g.power_w !== null
-      ? `功耗 ${g.power_w}${g.power_limit_w ? `/${g.power_limit_w}` : ""}W`
-      : null,
-    g.fan_percent !== undefined && g.fan_percent !== null ? `风扇 ${g.fan_percent}%` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  return (
-    <div key={g.index} className="mt-2 border-t border-dashed border-line pt-2">
-      <div className="truncate text-[11px] text-ink-2" title={g.name}>
-        #{g.index} {g.name || "GPU"}
-      </div>
-      <div className="mt-1 flex justify-between text-[11px] text-ink-3">
-        <span>算力</span>
-        <span className="tnum font-mono">{fmt(util, 0)}%</span>
-      </div>
-      <Meter pct={util} color={utilCol} />
-      <div className="mt-1 flex justify-between text-[11px] text-ink-3">
-        <span>显存</span>
-        <span className="tnum font-mono">
-          {fmt(g.mem_used_gb, 1)} / {fmt(g.mem_total_gb, 1)} GB
-        </span>
-      </div>
-      <Meter pct={memPct} color={memCol} />
-      {ext && (
-        <div className="tnum mt-1 font-mono text-[11px] text-ink-3">
-          {ext}
-          {g.clock_mhz ? ` · ${g.clock_mhz}MHz` : ""}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function hostPane(h: DeviceHost) {
+/** 本机硬件小卡片（只放顶部指标卡没有的信息，避免与顶部 CPU/内存/GPU/显存重复） */
+function hostCards(h: DeviceHost): React.ReactNode[] {
   const cpu = h.cpu ?? {};
-  const ram = h.ram ?? {};
   const disk = h.disk ?? {};
   const proc = h.process ?? {};
   const gpus = h.gpus ?? [];
-  // 系统版本详情（老响应可能是字符串，兼容一下）
   const os: OsInfo =
     h.os && typeof h.os === "object" ? (h.os as OsInfo) : { caption: h.os as string | undefined };
+  // 后端 platform.release() 在 Win11 上返回 10，旧进程未重启时 caption 仍是 "Windows 10"。
+  // 按内部版本号兜底纠正（22000 = Win11 首个版本），保证不重启后端也显示正确。
+  const buildNum = Number(os.build);
+  const osCaption = (os.caption ?? os.name ?? "–").replace(
+    /Windows\s*10/,
+    buildNum >= 22000 ? "Windows 11" : "Windows 10",
+  );
   const osTitle = [
     os.version ? `版本 ${os.version}` : null,
     os.display_version ? `功能更新 ${os.display_version}` : null,
     os.build ? `内部版本 ${os.build}` : null,
     os.arch ?? null,
     os.install_time ? `安装于 ${fmtTime(os.install_time)}` : null,
+    `主机名 ${h.hostname ?? "–"}`,
   ]
     .filter(Boolean)
     .join(" · ");
-  // CPU 温度：Windows 上没有免驱来源时按 封装 → 核心最大值 → ACPI 热区 逐级兜底
+  const osSub = [
+    h.hostname,
+    os.display_version ? `功能更新 ${os.display_version}` : null,
+    os.build ? `内部版本 ${os.build}` : null,
+    `运行 ${fmtUptime(h.service_uptime_s)}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   const th = h.thermal ?? {};
-  const fans = h.fans ?? {};
   const cores = th.cpu_cores_c ?? {};
   const coreNames = Object.keys(cores);
   const acpi = Object.entries(th.acpi_zones_c ?? {})
@@ -134,6 +188,22 @@ function hostPane(h: DeviceHost) {
     cpuTemp = `${fmt(Math.max(...coreNames.map((k) => cores[k])), 0)}°C`;
   }
   if (!cpuTemp) cpuTemp = acpi ? `不可用（ACPI 热区 ${acpi}）` : "不可用";
+  const gpuCompute = gpus.length
+    ? gpus.map((g) => `GPU${g.index} ${fmt(g.util_percent, 0)}%`).join(" · ")
+    : "–";
+  const gpuThermal = gpus
+    .map((g) => {
+      const bits = [
+        g.temperature_c !== undefined && g.temperature_c !== null ? `${fmt(g.temperature_c, 0)}°C` : null,
+        g.power_w !== undefined && g.power_w !== null ? `${fmt(g.power_w, 0)}W` : null,
+        g.fan_percent !== undefined && g.fan_percent !== null ? `风扇 ${fmt(g.fan_percent, 0)}%` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return bits ? `GPU${g.index} ${bits}` : null;
+    })
+    .filter(Boolean)
+    .join("；");
   const cpuTempTitle = [
     th.cpu_package_c !== null && th.cpu_package_c !== undefined
       ? `CPU Package ${fmt(th.cpu_package_c, 0)}°C`
@@ -143,93 +213,79 @@ function hostPane(h: DeviceHost) {
     acpi ? `ACPI 热区：${acpi}` : null,
     th.source ? `来源：${th.source}` : null,
     th.note ?? null,
+    gpuThermal ? `显卡：${gpuThermal}` : null,
   ]
     .filter(Boolean)
     .join("\n");
-  const sysFans =
-    (fans.system ?? []).map((f) => `${f.name} ${f.rpm}RPM`).join(" · ") || "不可用";
+  const cpuDetail = `${cpu.model ?? ""}（${cpu.cores_physical ?? "?"}C/${cpu.cores_logical ?? "?"}T${cpu.current_mhz ? ` · ${cpu.current_mhz}MHz` : ""}）`;
 
-  return (
-    <div className="rounded-xl bg-surface-2/70 p-3">
-      <PaneTitle text="本机" right={h.hostname ?? ""} />
-      <Kv label="系统" value={os.caption ?? os.name ?? "–"} title={osTitle} />
-      <Kv label="服务运行" value={fmtUptime(h.service_uptime_s)} title={`主机已运行 ${fmtUptime(h.host_uptime_s)}`} />
-      <div className="mt-2 border-t border-dashed border-line pt-2">
-        <Kv
-          label="CPU"
-          value={`${fmt(cpu.percent, 0)}%`}
-          title={`${cpu.model ?? ""}（${cpu.cores_physical ?? "?"}C/${cpu.cores_logical ?? "?"}T${cpu.current_mhz ? ` · ${cpu.current_mhz}MHz` : ""}）`}
-        />
-        <Meter pct={cpu.percent} color={(cpu.percent ?? 0) > 85 ? "var(--err)" : "var(--info)"} />
-        <div className="truncate text-[10px] text-ink-3">{cpu.model ?? ""}</div>
-        <div className="mt-1">
-          <Kv label="CPU 温度" value={cpuTemp} title={cpuTempTitle} />
-        </div>
-        <Kv label="内存" value={`${fmt(ram.used_gb, 1)} / ${fmt(ram.total_gb, 1)} GB`} />
-        <Meter pct={ram.percent} color={(ram.percent ?? 0) > 85 ? "var(--err)" : "var(--ok)"} />
-        {disk.total_gb ? (
-          <>
-            <Kv
-              label={`磁盘(${disk.path ?? "."})`}
-              value={`剩 ${fmt(disk.free_gb, 1)} / ${fmt(disk.total_gb, 1)} GB`}
-            />
-            <Meter pct={disk.percent} color={(disk.percent ?? 0) > 90 ? "var(--err)" : "var(--mute)"} />
-          </>
-        ) : null}
-        <Kv label="机箱风扇" value={sysFans} title={fans.note} />
-        <Kv
-          label="本进程"
-          value={
-            proc.pid
-              ? `pid ${proc.pid} · ${fmt(proc.rss_gb, 2)}GB · ${proc.threads ?? "–"} 线程`
-              : "–"
-          }
-        />
-      </div>
-      {h.nvidia_ok === false && (
-        <div className="mt-2 text-[11px] text-warn">未检测到 NVIDIA GPU（NVML 不可用）</div>
-      )}
-      {gpus.map(gpuBlock)}
-      {gpus.length > 0 && (
-        <div className="mt-1 text-[10px] text-ink-3">驱动 {h.driver_version ?? "?"}</div>
-      )}
-    </div>
-  );
+  const cards: React.ReactNode[] = [
+    <MiniCard
+      key="sys"
+      icon={Server}
+      label="系统"
+      value={osCaption}
+      sub={osSub}
+      title={osTitle}
+      wrap
+    />,
+    <MiniCard
+      key="cpu-model"
+      icon={Activity}
+      label="CPU 型号"
+      value={cpu.model ?? "–"}
+      sub={`${cpu.cores_physical ?? "?"}C/${cpu.cores_logical ?? "?"}T${cpu.current_mhz ? ` · ${cpu.current_mhz}MHz` : ""}`}
+      title={cpuDetail}
+    />,
+    <MiniCard
+      key="disk"
+      icon={HardDrive}
+      label={`磁盘(${disk.path ?? "."})`}
+      value={`剩 ${fmt(disk.free_gb, 1)} GB`}
+      sub={`共 ${fmt(disk.total_gb, 1)} GB`}
+      meter={{ pct: disk.percent ?? 0, color: (disk.percent ?? 0) > 90 ? "var(--err)" : "var(--mute)" }}
+    />,
+    <MiniCard
+      key="temp"
+      icon={Thermometer}
+      label="CPU 温度"
+      value={cpuTemp}
+      sub={th.source ?? undefined}
+      title={cpuTempTitle.split("\n").filter((x) => !x.startsWith("显卡：")).join("\n")}
+    />,
+    <MiniCard
+      key="gpu-compute"
+      icon={Gauge}
+      label="显卡算力"
+      value={gpuCompute}
+      sub={gpuThermal || undefined}
+      title={gpuThermal || gpuCompute}
+      wrap
+    />,
+    <MiniCard
+      key="proc"
+      icon={Activity}
+      label="本进程"
+      value={proc.pid ? `pid ${proc.pid} · ${fmt(proc.rss_gb, 2)} GB` : "–"}
+      sub={proc.pid ? `${proc.threads ?? "–"} 线程 · ${fmtUptime(proc.uptime_s)}` : undefined}
+    />,
+  ];
+  return cards;
 }
 
-function comfyPane(c: ComfyUpstream) {
+function ComfyService({ c }: { c: ComfyUpstream }) {
   const q = c.queue ?? {};
   const sys = c.system ?? {};
   const st = c.progress_stream;
-  const devs = (c.devices ?? []).map((d) => {
-    const used = (d.vram_total_gb ?? 0) - (d.vram_free_gb ?? 0);
-    const pct = d.vram_total_gb ? (used / d.vram_total_gb) * 100 : 0;
-    return (
-      <div key={d.name} className="mt-2 border-t border-dashed border-line pt-2">
-        <div className="truncate text-[11px] text-ink-2" title={d.name}>
-          {d.name ?? "device"}
-        </div>
-        <div className="mt-1 flex justify-between text-[11px] text-ink-3">
-          <span>显存可用</span>
-          <span className="tnum font-mono">
-            {fmt(d.vram_free_gb, 2)} / {fmt(d.vram_total_gb, 1)} GB
-          </span>
-        </div>
-        <Meter pct={pct} color={pct > 90 ? "var(--err)" : "var(--info)"} />
-        <Kv
-          label="torch 已分配"
-          value={`${fmt(d.torch_vram_total_gb, 2)} GB（缓存 ${fmt(d.torch_vram_free_gb, 2)}GB）`}
-        />
-      </div>
-    );
-  });
   return (
-    <div className="rounded-xl bg-surface-2/70 p-3">
-      <PaneTitle text="ComfyUI" />
-      <div className="mb-1">
-        <Dot ok={!!c.reachable} text={c.reachable ? "可访问" : "不可访问"} />
-      </div>
-      <Kv label="地址" value={c.base_url} />
+    <ServiceCard
+      icon={ImageIcon}
+      name="ComfyUI"
+      caption={c.base_url}
+      state={c.reachable ? "在线" : "不可访问"}
+      ok={!!c.reachable}
+      accent="var(--accent-2)"
+    >
       <Kv
         label="队列"
         value={`执行中 ${(q.running ?? []).length} · 排队 ${(q.pending ?? []).length}`}
@@ -247,33 +303,43 @@ function comfyPane(c: ComfyUpstream) {
         />
       )}
       {sys.comfyui_version ? (
-        <div className="mt-2 border-t border-dashed border-line pt-2">
+        <>
           <Kv label="版本" value={`ComfyUI ${sys.comfyui_version}`} />
           <Kv label="运行环境" value={`Python ${sys.python ?? "?"} · torch ${sys.pytorch ?? "?"}`} />
           <Kv
             label="上游系统"
             value={`${sys.os ?? "?"} · 内存可用 ${fmt(sys.ram_free_gb, 1)}/${fmt(sys.ram_total_gb, 1)}GB`}
           />
-        </div>
+        </>
       ) : (
-        <div className="mt-2 text-[11px] text-ink-3">
-          /system_stats 不可用（上游未响应或未开放）
-        </div>
+        <div className="py-1 text-ink-3">/system_stats 不可用（上游未响应或未开放）</div>
       )}
-      {devs}
-    </div>
+      {(c.devices ?? []).map((d) => {
+        const used = (d.vram_total_gb ?? 0) - (d.vram_free_gb ?? 0);
+        const pct = d.vram_total_gb ? (used / d.vram_total_gb) * 100 : 0;
+        return (
+          <Kv
+            key={d.name}
+            label={`显存 ${d.name ?? "device"}`}
+            value={`${fmt(d.vram_free_gb, 2)} / ${fmt(d.vram_total_gb, 1)} GB（${fmt(pct, 0)}%）`}
+            title={`torch 已分配 ${fmt(d.torch_vram_total_gb, 2)} GB（缓存 ${fmt(d.torch_vram_free_gb, 2)}GB）`}
+          />
+        );
+      })}
+    </ServiceCard>
   );
 }
 
-function cosyPane(c: CosyUpstream) {
-  const info = c.info;
+function TtsService({ c }: { c: CosyUpstream }) {
   return (
-    <div className="rounded-xl bg-surface-2/70 p-3">
-      <PaneTitle text="CosyVoice" />
-      <div className="mb-1">
-        <Dot ok={!!c.reachable} text={c.reachable ? "可访问" : "不可访问"} />
-      </div>
-      <Kv label="地址" value={c.base_url} />
+    <ServiceCard
+      icon={Volume2}
+      name="TTS 服务"
+      caption={c.base_url}
+      state={!c.reachable ? "不可访问" : c.model_loaded ? "就绪" : "模型未加载"}
+      ok={!!c.reachable && !!c.model_loaded}
+      accent="var(--info)"
+    >
       <Kv
         label="模型状态"
         value={c.model_loaded ? "已加载" : "未就绪"}
@@ -283,23 +349,58 @@ function cosyPane(c: CosyUpstream) {
       <Kv label="参考音色" value={`${c.voices ?? "–"} 个`} />
       <Kv label="参考目录" value={c.voices_dir ?? "（未配置）"} />
       <Kv label="探测时间" value={c.last_probe_ts ? fmtTime(c.last_probe_ts) : "–"} />
-      {info && Object.keys(info).length > 0 && (
-        <Kv label="上游自述" value={JSON.stringify(info)} title={JSON.stringify(info, null, 2)} />
+      {c.info && Object.keys(c.info).length > 0 && (
+        <Kv label="上游自述" value={JSON.stringify(c.info)} title={JSON.stringify(c.info, null, 2)} />
       )}
-    </div>
+    </ServiceCard>
+  );
+}
+
+function NsfwService({ n }: { n: NsfwUpstream }) {
+  const h = n.health;
+  const state = !n.enabled ? "未启用" : n.reachable ? "在线" : "不可访问";
+  return (
+    <ServiceCard
+      icon={ShieldCheck}
+      name="NSFW 检测"
+      caption={n.base_url}
+      state={state}
+      ok={n.enabled ? !!n.reachable : null}
+      accent="var(--warn)"
+    >
+      <Kv label="送检模式" value={n.mode ?? "–"} title="label=随 history 返回结果；block=违规图直接拦截" />
+      {n.enabled && n.reachable && h ? (
+        <>
+          <Kv label="服务版本" value={h.version ?? "–"} />
+          <Kv label="检测模型" value={h.model ?? "–"} />
+          <Kv
+            label="模型就绪"
+            value={`主 ${h.main_ready ? "是" : "否"} · 辅 ${h.aux_ready ? "是" : "否"}`}
+            title={`已加载：主 ${h.main_loaded ? "是" : "否"} · 辅 ${h.aux_loaded ? "是" : "否"}`}
+          />
+          <Kv label="推理设备" value={h.device ?? "–"} />
+          <Kv label="空闲" value={h.idle_sec === undefined ? "–" : `${h.idle_sec}s`} />
+        </>
+      ) : (
+        <div className="py-1 text-ink-3">
+          {n.enabled ? "未收到 /healthz 响应（送检会自动降级，不阻断出图）" : "配置未启用，零开销"}
+        </div>
+      )}
+    </ServiceCard>
   );
 }
 
 export function DevicePanel() {
   const { device, error, updatedAt, refresh } = useDevice();
   const sc = device?.scheduler ?? {};
+  const up = device?.upstreams ?? {};
 
   return (
     <div>
       <div className="flex flex-col gap-2 border-b border-line px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-medium text-ink-2">设备状态</h2>
-          <span className="text-[11px] text-ink-3">本机 + 上游后端（每 10s 自动刷新）</span>
+          <span className="text-[11px] text-ink-3">本机硬件 + 业务服务（每 10s 自动刷新）</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-ink-3">
@@ -322,18 +423,39 @@ export function DevicePanel() {
           </button>
         </div>
       </div>
-      <div className="grid grid-cols-1 gap-4 p-5 lg:grid-cols-3">
-        {error ? (
-          <div className="text-xs text-err">加载设备状态失败：{error}</div>
-        ) : device ? (
-          <>
-            {hostPane(device.host ?? {})}
-            {comfyPane(device.upstreams?.comfyui ?? {})}
-            {cosyPane(device.upstreams?.cosyvoice ?? {})}
-          </>
-        ) : (
-          <div className="text-xs text-ink-3">加载中…</div>
-        )}
+
+      <div className="space-y-5 p-5">
+        <section>
+          <h3 className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+            本机硬件
+          </h3>
+          {error ? (
+            <div className="text-xs text-err">加载设备状态失败：{error}</div>
+          ) : device ? (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+              {hostCards(device.host ?? {})}
+            </div>
+          ) : (
+            <div className="text-xs text-ink-3">加载中…</div>
+          )}
+        </section>
+
+        <section>
+          <h3 className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+            业务服务
+          </h3>
+          {error ? (
+            <div className="text-xs text-err">加载设备状态失败：{error}</div>
+          ) : device ? (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <ComfyService c={up.comfyui ?? {}} />
+              <TtsService c={up.cosyvoice ?? {}} />
+              <NsfwService n={up.nsfw ?? {}} />
+            </div>
+          ) : (
+            <div className="text-xs text-ink-3">加载中…</div>
+          )}
+        </section>
       </div>
     </div>
   );

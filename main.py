@@ -13,11 +13,15 @@ WebUI：http://127.0.0.1:9000/ui
 import asyncio
 import json
 import logging
+import os
+import subprocess
+import sys
 import threading
 import time
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import click
@@ -85,6 +89,9 @@ def _setup_logging(log_buffer: 'LogBuffer'):
 # 全局状态（由 create_app 初始化）
 # ============================================================================
 cfg: Config = Config.load()
+_config_path: str = os.environ.get('MIDDLE_CONFIG', 'middle-station.yaml')
+_started_at: float = time.time()          # 进程启动时刻，前端据此判断重启是否完成
+_restarting: bool = False
 monitor: Optional[ResourceMonitor] = None
 scheduler: Optional[Scheduler] = None
 storage: Optional[Storage] = None
@@ -225,10 +232,11 @@ async def _device_status(raw: bool = False) -> Dict:
     上游任何一个挂了都只是 `reachable: false`，不影响本机和另一个上游的数据。
     """
     host = await monitor.device_status()
-    comfy_probe, comfy_stats, cosy_probe = await asyncio.gather(
+    comfy_probe, comfy_stats, cosy_probe, nsfw_probe = await asyncio.gather(
         comfy.upstream_probe(timeout=3.0),
         comfy.system_stats(timeout=3.0),
         tts.probe(timeout=3.0),
+        nsfw_checker.probe(timeout=3.0) if nsfw_checker is not None else asyncio.sleep(0, result=None),
         return_exceptions=True,
     )
     if isinstance(comfy_probe, BaseException):
@@ -238,6 +246,18 @@ async def _device_status(raw: bool = False) -> Dict:
         comfy_stats = None
     if isinstance(cosy_probe, BaseException):
         cosy_probe = None
+    if isinstance(nsfw_probe, BaseException):
+        nsfw_probe = None
+
+    if nsfw_checker is not None:
+        nsfw_info = {
+            **nsfw_checker.status(),
+            'reachable': isinstance(nsfw_probe, dict),
+            'health': nsfw_probe if isinstance(nsfw_probe, dict) else None,
+        }
+    else:
+        nsfw_info = {'enabled': False, 'base_url': cfg.nsfw.base_url,
+                     'mode': cfg.nsfw.mode, 'reachable': False, 'health': None}
 
     sys_info: Dict = {}
     dev_info: list = []
@@ -292,7 +312,7 @@ async def _device_status(raw: bool = False) -> Dict:
     return {
         'ts': time.time(),
         'host': host,
-        'upstreams': {'comfyui': comfy_info, 'cosyvoice': cosy_info},
+        'upstreams': {'comfyui': comfy_info, 'cosyvoice': cosy_info, 'nsfw': nsfw_info},
         'scheduler': {
             'queue_length': st['queue_length'],
             'running': st['running'],
@@ -309,9 +329,32 @@ async def _device_status(raw: bool = False) -> Dict:
 # ============================================================================
 # 提交辅助
 # ============================================================================
+def _build_config_from_dict(data: Dict) -> Config:
+    """用提交的完整 dict 构造 Config（经临时 yaml 走标准 load，环境变量仍优先）。"""
+    import tempfile
+    import yaml
+    allowed = set(Config().to_dict().keys())
+    clean = {k: v for k, v in data.items() if k in allowed and isinstance(v, dict)}
+    if not clean:
+        raise ValueError('empty or invalid config')
+    fd, tmp = tempfile.mkstemp(suffix='.yaml', prefix='taskhub-cfg-')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            yaml.safe_dump(clean, f, allow_unicode=True, sort_keys=False)
+        return Config.load(tmp)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 async def _submit(task: Task, media_type: str = 'application/octet-stream',
                   queue_wait: Optional[float] = None,
                   infer_timeout: Optional[float] = None) -> Response:
+    # 业务开关：拒绝新任务（在跑的不受影响）。comfyui /prompt 不走 _submit，在路由单独判。
+    if not cfg.server.tasks_enabled.get(task.task_type, True):
+        raise HTTPException(status_code=503, detail=f'{task.task_type} 业务已被 WebUI 关闭')
     scheduler.add_task(task)
     result, code, err = await scheduler.submit(
         task, queue_wait=queue_wait, infer_timeout=infer_timeout)
@@ -369,6 +412,7 @@ def _register_routes(app: FastAPI):
             'max_concurrent': scheduler.max_concurrent,
             'sample_rate': tts.sample_rate,
             'self_check': _self_check(),
+            'started_at': _started_at,   # 进程启动时刻，供 WebUI 判断重启是否完成
         }
 
     @app.get('/monitor')
@@ -430,6 +474,7 @@ def _register_routes(app: FastAPI):
                 'queue_wait': cfg.server.queue_wait,
                 'infer_timeout': cfg.server.infer_timeout,
                 'db_path': cfg.server.db_path,
+                'tasks_enabled': dict(cfg.server.tasks_enabled),
             },
             'tts': {
                 'base_url': cfg.tts.base_url,
@@ -459,7 +504,88 @@ def _register_routes(app: FastAPI):
                 'slow_min_seconds': cfg.inspector.slow_min_seconds,
                 'stall_seconds': cfg.inspector.stall_seconds,
             },
+            'nsfw': {
+                'enabled': cfg.nsfw.enabled,
+                'base_url': cfg.nsfw.base_url,
+                'mode': cfg.nsfw.mode,
+                'timeout': cfg.nsfw.timeout,
+                'wait_seconds': cfg.nsfw.wait_seconds,
+            },
+            'started_at': _started_at,
         }
+
+    @app.get('/config/raw')
+    async def config_raw_api():
+        """全量可编辑配置（写回用）。"""
+        return cfg.to_dict()
+
+    @app.put('/config')
+    async def config_save(request: Request):
+        """保存配置到 middle-station.yaml（业务开关同时即时生效，其余需重启）。"""
+        global cfg, _restarting
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail='invalid json body')
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=400, detail='config must be an object')
+        try:
+            new = _build_config_from_dict(data)
+        except (ValueError, TypeError, OSError) as e:
+            raise HTTPException(status_code=400, detail=f'invalid config: {e}')
+
+        # 写 yaml（.bak 备份），再把内存 cfg 整体替换，使业务开关即时生效。
+        # 注意：调度器/适配器仍持有旧快照，除开关外的字段需重启才真正生效。
+        old_types = dict(cfg.server.tasks_enabled)
+        new.server.tasks_enabled = dict(data.get('server', {}).get('tasks_enabled', new.server.tasks_enabled))
+        try:
+            new.save(_config_path)
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f'write config failed: {e}')
+        cfg = new
+        if old_types != cfg.server.tasks_enabled:
+            logger.info('[config] tasks_enabled changed in memory: %s -> %s (effective immediately)',
+                        old_types, cfg.server.tasks_enabled)
+        return {
+            'ok': True,
+            'config_file': _config_path,
+            'needs_restart': True,
+            'tasks_enabled': dict(cfg.server.tasks_enabled),
+            'note': '业务开关已即时生效；其余配置需重启服务后生效',
+        }
+
+    @app.post('/restart')
+    async def restart_api():
+        """重启服务：拉起新进程（等待端口释放），随后退出当前进程。"""
+        global _restarting
+        if _restarting:
+            raise HTTPException(status_code=409, detail='restart already in progress')
+        _restarting = True
+
+        async def _do_restart():
+            await asyncio.sleep(1.0)  # 让 HTTP 响应先返回
+            try:
+                host = cfg.server.host
+                port = cfg.server.port
+                cmd = [sys.executable, str(Path(__file__).resolve()), 'start',
+                       '--host', host, '--port', str(port), '--config', _config_path,
+                       '--wait-free']
+                creation = 0
+                if os.name == 'nt':
+                    creation = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
+                subprocess.Popen(cmd, cwd=str(Path(__file__).resolve().parent),
+                                 creationflags=creation,
+                                 stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                logger.info('[restart] spawned new process: %s', ' '.join(cmd))
+            except Exception as e:  # noqa: BLE001
+                logger.warning('[restart] spawn failed: %s', e)
+                _restarting = False
+                return
+            os._exit(0)
+
+        asyncio.create_task(_do_restart())
+        return {'ok': True, 'restarting': True, 'old_started_at': _started_at}
 
     @app.get('/queue')
     async def queue_api(limit: int = 100):
@@ -529,6 +655,8 @@ def _register_routes(app: FastAPI):
     # ---- ComfyUI 标准接口（docs/comfyui-backend-api.md §2） ----
     @app.post('/prompt')
     async def comfy_prompt(request: Request):
+        if not cfg.server.tasks_enabled.get('comfyui', True):
+            raise HTTPException(status_code=503, detail='comfyui 业务已被 WebUI 关闭')
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001
@@ -670,12 +798,13 @@ def _register_routes(app: FastAPI):
 # 应用工厂
 # ============================================================================
 def create_app(config_path: Optional[str] = None) -> FastAPI:
-    global cfg, monitor, scheduler, storage, tts, comfy, inspector, broadcaster, log_buffer, _app, nsfw_checker
+    global cfg, monitor, scheduler, storage, tts, comfy, inspector, broadcaster, log_buffer, _app, nsfw_checker, _config_path
 
     _apply_log_filters()
 
     if config_path:
         cfg = Config.load(config_path)
+        _config_path = config_path
 
     monitor = ResourceMonitor(cfg.monitoring.interval_seconds, cfg.monitoring.gpu_threshold)
     scheduler = Scheduler(
@@ -718,16 +847,38 @@ def cli():
     pass
 
 
+def _wait_port_free(host: str, port: int, timeout: float = 40.0) -> bool:
+    """等待端口释放（自我重启时新进程用）。"""
+    import socket
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        try:
+            s.connect((host if host not in ('0.0.0.0', '') else '127.0.0.1', port))
+            s.close()
+            time.sleep(0.4)
+            continue
+        except OSError:
+            s.close()
+            return True
+    return False
+
+
 @cli.command()
 @click.option('--host', default=None, help='listen host')
 @click.option('--port', default=None, type=int, help='listen port')
 @click.option('--config', default=None, type=click.Path(exists=False), help='config yaml path')
 @click.option('--reload', is_flag=True, help='auto reload on code change')
-def start(host, port, config, reload):
+@click.option('--wait-free', is_flag=True, help='wait until port is free before binding (self-restart)')
+def start(host, port, config, reload, wait_free):
     """启动中转站服务。"""
     app = create_app(config)
     h = host or cfg.server.host
     p = port or cfg.server.port
+    if wait_free and not _wait_port_free(h, p):
+        logger.error('port %s:%s still busy after wait, abort start', h, p)
+        return
     logger.info('starting TaskHub on %s:%s', h, p)
     uvicorn.run(app, host=h, port=p, reload=reload, access_log=False, log_level='info')
 

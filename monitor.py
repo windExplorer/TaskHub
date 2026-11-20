@@ -147,6 +147,20 @@ class ResourceMonitor:
             'arch': platform.machine(),
             'python': platform.python_version(),
         }
+        # platform.release() 在 Win11 上仍返回 "10"（内核 10.0），按内部版本号纠正：
+        # 22000 = Win11 首个版本（21H2），此前为 Win10。注册表读不到时保持原值。
+        if os.name == 'nt':
+            try:
+                import winreg
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r'SOFTWARE\Microsoft\Windows NT\CurrentVersion',
+                ) as k:
+                    build = int(winreg.QueryValueEx(k, 'CurrentBuildNumber')[0])
+                if build >= 22000:
+                    info['name'] = 'Windows 11'
+            except Exception:  # noqa: BLE001
+                pass
         if os.name == 'nt':
             try:
                 import winreg

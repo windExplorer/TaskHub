@@ -86,20 +86,19 @@ export function LineChart({
   const hoverX = hoverIdx !== null && n > 0 ? xOf(hoverIdx) : null;
 
   return (
-    <div
-      ref={wrapRef}
-      className="relative select-none"
-      style={{ height }}
-      onMouseMove={(e) => {
-        if (n === 0) return;
-        const rect = e.currentTarget.getBoundingClientRect();
-        const idx = Math.round(((e.clientX - rect.left - PAD_L) / plotW) * (n - 1));
-        setHoverIdx(Math.max(0, Math.min(n - 1, idx)));
-      }}
-      onMouseLeave={() => setHoverIdx(null)}
-    >
+    <div ref={wrapRef} className="relative select-none">
       {w > 0 && n > 0 ? (
-        <svg width={w} height={height} className="overflow-visible">
+        <svg
+          width={w}
+          height={height}
+          className="overflow-visible"
+          onMouseMove={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const idx = Math.round(((e.clientX - rect.left - PAD_L) / plotW) * (n - 1));
+            setHoverIdx(Math.max(0, Math.min(n - 1, idx)));
+          }}
+          onMouseLeave={() => setHoverIdx(null)}
+        >
           <defs>
             {series.map(
               (s) =>
@@ -211,7 +210,12 @@ export function LineChart({
           })}
         </svg>
       ) : (
-        <div className="flex h-full items-center justify-center text-xs text-ink-3">{emptyText}</div>
+        <div
+          className="flex items-center justify-center text-xs text-ink-3"
+          style={{ height }}
+        >
+          {emptyText}
+        </div>
       )}
 
       {/* hover tooltip */}
@@ -236,8 +240,8 @@ export function LineChart({
         </div>
       )}
 
-      {/* 图例 */}
-      <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 pl-10">
+      {/* 图例：绘图区外正常占位，避免溢出贴住卡片底边 */}
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 pl-10">
         {series.map((s) => (
           <span key={s.name} className="flex items-center gap-1.5 text-[11px] text-ink-3">
             <span className="h-[3px] w-4 rounded-full" style={{ background: s.color }} />

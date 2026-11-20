@@ -85,3 +85,19 @@ class NsfwChecker:
 
     def status(self) -> dict:
         return {'enabled': True, 'base_url': self.base_url, 'mode': self.mode}
+
+    async def probe(self, timeout: float = 3.0) -> Optional[dict]:
+        """探测 nsfw-check 健康状态（GET /healthz）；失败返回 None，绝不抛异常。
+
+        /healthz 无需 token。模型未加载（available/loaded=false）仍算服务可达，
+        由前端按字段展示，避免把「预热中」误标成「服务不可用」。
+        """
+        try:
+            r = await self._client.get(f'{self.base_url}/healthz', timeout=timeout)
+            if r.status_code != 200:
+                return None
+            body = r.json()
+            return body if isinstance(body, dict) else None
+        except Exception as e:  # noqa: BLE001
+            logger.warning('[nsfw] probe failed: %s', e)
+            return None

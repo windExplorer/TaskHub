@@ -250,10 +250,28 @@ export interface CosyUpstream {
   info?: Record<string, unknown> | null;
 }
 
+export interface NsfwUpstream {
+  enabled?: boolean;
+  base_url?: string;
+  mode?: string;
+  reachable?: boolean;
+  health?: {
+    ok?: boolean;
+    main_ready?: boolean;
+    aux_ready?: boolean;
+    main_loaded?: boolean;
+    aux_loaded?: boolean;
+    device?: string;
+    idle_sec?: number;
+    model?: string;
+    version?: string;
+  } | null;
+}
+
 export interface DeviceResp {
   ts: number;
   host?: DeviceHost;
-  upstreams?: { comfyui?: ComfyUpstream; cosyvoice?: CosyUpstream };
+  upstreams?: { comfyui?: ComfyUpstream; cosyvoice?: CosyUpstream; nsfw?: NsfwUpstream };
   scheduler?: {
     queue_length?: number;
     running?: number;
@@ -266,17 +284,19 @@ export interface DeviceResp {
   self_check?: SelfCheck | null;
 }
 
-// ---------- 配置（GET /config，只读摘要） ----------
+// ---------- 配置（GET /config 摘要 / GET /config/raw 全量） ----------
 
 export type ConfigSection = Record<string, unknown>;
 
 export interface RuntimeConfig {
   config_file: string;
-  server: ConfigSection;
+  server: ConfigSection & { tasks_enabled?: Record<string, boolean> };
   tts: ConfigSection;
   comfyui: ConfigSection;
   monitoring: ConfigSection;
   inspector: ConfigSection;
+  nsfw?: ConfigSection;
+  started_at?: number;
 }
 
 // ---------- WebSocket 消息 ----------

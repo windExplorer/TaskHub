@@ -111,3 +111,38 @@ export async function cancelTask(taskId: string): Promise<void> {
 export async function fetchConfig(): Promise<RuntimeConfig> {
   return request<RuntimeConfig>("/config", { method: "GET" }, 10_000);
 }
+
+/** 全量可编辑配置（写回用） */
+export async function fetchConfigRaw(): Promise<Record<string, Record<string, unknown>>> {
+  return request("/config/raw", { method: "GET" }, 10_000);
+}
+
+export interface SaveConfigResult {
+  ok: boolean;
+  config_file: string;
+  needs_restart: boolean;
+  tasks_enabled?: Record<string, boolean>;
+  note?: string;
+}
+
+export async function saveConfig(data: Record<string, Record<string, unknown>>): Promise<SaveConfigResult> {
+  return request("/config", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  }, 15_000);
+}
+
+export interface HealthResp {
+  status: string;
+  started_at?: number;
+}
+
+export async function fetchHealth(): Promise<HealthResp> {
+  return request<HealthResp>("/health", { method: "GET" }, 5_000);
+}
+
+/** 触发服务重启（连接会中断，调用方需容错网络错误） */
+export async function restartService(): Promise<{ ok: boolean; restarting: boolean; old_started_at?: number }> {
+  return request("/restart", { method: "POST" }, 10_000);
+}

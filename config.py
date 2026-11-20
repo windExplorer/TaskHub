@@ -53,6 +53,8 @@ class ServerConfig:
     frontend_dir: str = './webui/dist'
     # 任务类型切换后、执行新任务前先清理残留显存（当前仅 ComfyUI 侧有卸载接口）
     vram_cleanup_on_type_switch: bool = True
+    # 业务开关：拒绝接某类新任务（在跑的不受影响）。运行时改内存即生效。
+    tasks_enabled: Dict[str, bool] = field(default_factory=lambda: {'tts': True, 'comfyui': True})
 
 
 @dataclass
@@ -157,6 +159,11 @@ class Config:
         cfg.server.vram_cleanup_on_type_switch = _env_bool(
             'MIDDLE_VRAM_CLEANUP_ON_TYPE_SWITCH',
             bool(s.get('vram_cleanup_on_type_switch', cfg.server.vram_cleanup_on_type_switch)))
+        te = s.get('tasks_enabled', {}) or {}
+        cfg.server.tasks_enabled = {
+            'tts': bool(te.get('tts', True)),
+            'comfyui': bool(te.get('comfyui', True)),
+        }
 
         # tts
         t = data.get('tts', {}) or {}
@@ -232,3 +239,80 @@ class Config:
         cfg.nsfw.output_dir = _env('MIDDLE_NSFW_OUTPUT_DIR') or n.get('output_dir', cfg.nsfw.output_dir)
 
         return cfg
+
+    def to_dict(self) -> Dict:
+        """导出为可写回 yaml 的字典（只含文件字段，不含运行时探测值）。"""
+        return {
+            'server': {
+                'host': self.server.host,
+                'port': self.server.port,
+                'max_concurrent': self.server.max_concurrent,
+                'queue_wait': self.server.queue_wait,
+                'infer_timeout': self.server.infer_timeout,
+                'db_path': self.server.db_path,
+                'log_max_lines': self.server.log_max_lines,
+                'frontend_dir': self.server.frontend_dir,
+                'vram_cleanup_on_type_switch': self.server.vram_cleanup_on_type_switch,
+                'tasks_enabled': dict(self.server.tasks_enabled),
+            },
+            'tts': {
+                'base_url': self.tts.base_url,
+                'sample_rate': self.tts.sample_rate,
+                'voices_dir': self.tts.voices_dir,
+                'voices_json': self.tts.voices_json,
+                'voices': dict(self.tts.voices),
+            },
+            'comfyui': {
+                'base_url': self.comfyui.base_url,
+                'serialize_concurrent': self.comfyui.serialize_concurrent,
+                'watch_interval': self.comfyui.watch_interval,
+                'watch_timeout': self.comfyui.watch_timeout,
+                'watch_lost_grace': self.comfyui.watch_lost_grace,
+                'watch_lost_confirm': self.comfyui.watch_lost_confirm,
+                'progress_stream': self.comfyui.progress_stream,
+                'client_id': self.comfyui.client_id,
+                'free_vram_on_type_switch': self.comfyui.free_vram_on_type_switch,
+            },
+            'monitoring': {
+                'gpu_threshold': self.monitoring.gpu_threshold,
+                'vram_threshold': self.monitoring.vram_threshold,
+                'vram_min_free_gb': self.monitoring.vram_min_free_gb,
+                'interval_seconds': self.monitoring.interval_seconds,
+            },
+            'inspector': {
+                'enabled': self.inspector.enabled,
+                'interval': self.inspector.interval,
+                'slow_factor': self.inspector.slow_factor,
+                'slow_min_seconds': self.inspector.slow_min_seconds,
+                'stall_seconds': self.inspector.stall_seconds,
+                'history_hours': self.inspector.history_hours,
+                'baseline_ttl': self.inspector.baseline_ttl,
+                'system_stats_every': self.inspector.system_stats_every,
+            },
+            'nsfw': {
+                'enabled': self.nsfw.enabled,
+                'base_url': self.nsfw.base_url,
+                'token': self.nsfw.token,
+                'mode': self.nsfw.mode,
+                'timeout': self.nsfw.timeout,
+                'wait_seconds': self.nsfw.wait_seconds,
+                'output_dir': self.nsfw.output_dir,
+            },
+        }
+
+    def save(self, path: Optional[str] = None) -> str:
+        """写回 yaml（保留原文件为 .bak）。返回写入路径。"""
+        import shutil
+        import yaml
+        path = path or _env('MIDDLE_CONFIG', DEFAULT_CONFIG_PATH)
+        if os.path.exists(path):
+            try:
+                shutil.copy2(path, path + '.bak')
+            except OSError as e:
+                logger.warning('backup config failed: %s', e)
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            yaml.safe_dump(self.to_dict(), f, allow_unicode=True, sort_keys=False)
+        os.replace(tmp, path)
+        logger.info('saved config to %s', path)
+        return path
