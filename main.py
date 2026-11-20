@@ -901,10 +901,16 @@ def cli():
 
 
 def _spawn_detached(cmd: list, log_file: Path) -> int:
-    """启动一个脱离终端的后台进程，stdout/stderr 追加到 log_file。返回子进程 pid。"""
+    """启动一个真正脱离终端的后台进程，stdout/stderr 追加到 log_file。返回子进程 pid。
+
+    Windows：必须用 DETACHED_PROCESS（完全脱离控制台）。仅 CREATE_NEW_PROCESS_GROUP
+    只隔离 Ctrl+C，关闭控制台窗口时 Windows 仍会向附加进程发 CTRL_CLOSE_EVENT 把它杀掉，
+    这正是"关终端后台就没了/托盘图标消失"的根因。DETACHED_PROCESS 不能与新进程组/
+    CREATE_NO_WINDOW 同用，故单独使用。
+    """
     creation = 0
     if os.name == 'nt':
-        creation = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
+        creation = getattr(subprocess, 'DETACHED_PROCESS', 0)
     try:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         log_fh = open(log_file, 'a', encoding='utf-8', buffering=1)
