@@ -615,6 +615,7 @@ class ComfyAdapter:
             verdict = {'available': False, 'error': str(e)}
         finally:
             self._nsfw_results[real_pid] = verdict
+            self._attach_verdict_to_task(real_pid, verdict)
             ev = self._nsfw_events.get(real_pid)
             if ev is not None:
                 ev.set()
@@ -622,6 +623,21 @@ class ComfyAdapter:
             logger.info('[nsfw] task %s verdict: level=%s action=%s score=%s',
                         real_pid, verdict.get('level'), verdict.get('action'), verdict.get('score'))
         return verdict
+
+    def _attach_verdict_to_task(self, real_pid: str, verdict: Dict) -> None:
+        """把送检结论回写到调度器任务（WebUI 任务列表可见）。
+
+        label 模式下检测异步完成时任务往往已终态落库，这里按 real_pid 反查任务
+        补写 nsfw 字段并经 set_task_nsfw 重新落库/推送；任务已被淘汰护栏挤出
+        scheduler.tasks（或检测降级无结论）时静默跳过。
+        """
+        if self.scheduler is None:
+            return
+        virtual_pid = self._vpids_by_real.get(real_pid)
+        task_id = self.task_ids.get(virtual_pid) if virtual_pid else None
+        task = self.scheduler.tasks.get(task_id) if task_id else None
+        if task is not None:
+            self.scheduler.set_task_nsfw(task, verdict)
 
     def _nsfw_blocked_entry(self, prompt_id: str, verdict: Dict) -> Dict:
         """block 模式下的合成 history 条目：插件立刻收到明确失败，不泄露图片。"""

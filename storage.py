@@ -65,6 +65,9 @@ class Storage:
             cols = [r[1] for r in c.execute('PRAGMA table_info(tasks)')]
             if 'text_len' not in cols:
                 c.execute('ALTER TABLE tasks ADD COLUMN text_len INTEGER DEFAULT 0')
+            # 兼容旧库：补充 nsfw 列（NSFW 送检结论 JSON，仅 comfyui 任务有值）
+            if 'nsfw' not in cols:
+                c.execute('ALTER TABLE tasks ADD COLUMN nsfw TEXT')
 
     # ---------- 启动对账 ----------
 
@@ -122,6 +125,17 @@ class Storage:
         except Exception:  # noqa: BLE001
             return None
 
+    @staticmethod
+    def _nsfw_json(task) -> Optional[str]:
+        """NSFW 送检结论序列化为 JSON（无结论/序列化失败返回 NULL）。"""
+        v = getattr(task, 'nsfw', None)
+        if not v:
+            return None
+        try:
+            return json.dumps(v, ensure_ascii=False, default=str)[:2000]
+        except Exception:  # noqa: BLE001
+            return None
+
     def _record_sync(self, task) -> None:
         try:
             with self._conn() as c:
@@ -129,8 +143,8 @@ class Storage:
                     """INSERT OR REPLACE INTO tasks
                        (task_id, task_type, priority, status, status_code, error,
                         created_at, started_at, finished_at, queue_seconds, run_seconds,
-                        resource_weight, estimated_duration, text_len)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        resource_weight, estimated_duration, text_len, nsfw)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         task.task_id,
                         task.task_type,
@@ -146,6 +160,7 @@ class Storage:
                         task.resource_weight,
                         task.estimated_duration,
                         getattr(task, 'text_len', 0),
+                        self._nsfw_json(task),
                     ),
                 )
                 pj = self._payload_json(task)
@@ -228,10 +243,22 @@ class Storage:
                 rows = c.execute(
                     f'SELECT * FROM tasks{wsql} ORDER BY created_at DESC LIMIT ? OFFSET ?',
                     args + [page_size, (page - 1) * page_size]).fetchall()
+                tasks = []
+                for r in rows:
+                    d = dict(r)
+                    raw = d.get('nsfw')
+                    if raw:
+                        try:
+                            d['nsfw'] = json.loads(raw)
+                        except ValueError:
+                            d['nsfw'] = None
+                    else:
+                        d['nsfw'] = None
+                    tasks.append(d)
                 return {
                     'total': total, 'page': page, 'page_size': page_size,
                     'pages': max(1, (total + page_size - 1) // page_size),
-                    'tasks': [dict(r) for r in rows],
+                    'tasks': tasks,
                 }
         except Exception as e:  # noqa: BLE001
             logger.error('query tasks failed: %s', e)

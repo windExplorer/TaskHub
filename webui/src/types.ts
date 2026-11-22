@@ -27,6 +27,18 @@ export interface TaskAnomaly {
   ts: number;
 }
 
+/** NSFW 送检结论（detect/simple 聚合后的最严一张；available=false 表示检测未完成） */
+export interface TaskNsfw {
+  available?: boolean;
+  level?: "nsfw" | "review" | "safe" | (string & {});
+  action?: "block" | "review" | "allow" | (string & {});
+  score?: number;
+  error?: string;
+  filename?: string;
+  images_checked?: number;
+  record_id?: string | number;
+}
+
 export interface Task {
   task_id: string;
   task_type: TaskType;
@@ -44,6 +56,7 @@ export interface Task {
   text_len: number;
   progress: TaskProgress;
   anomaly: TaskAnomaly | null;
+  nsfw: TaskNsfw | null;
 }
 
 // ---------- 自检 ----------

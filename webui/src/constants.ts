@@ -51,6 +51,14 @@ export const ANOM_STYLE: Record<string, AnomMeta> = {
   info: { label: "info", cls: "bg-info-bg text-info border-info/40" },
 };
 
+/** NSFW 送检结论徽章（verdict.level → 文案/配色；available=false 视为「未检出」） */
+export const NSFW_META: Record<string, ChipMeta> = {
+  nsfw: { label: "NSFW", cls: "bg-err-bg text-err border-err/40", dot: "bg-err" },
+  review: { label: "需复核", cls: "bg-warn-bg text-warn border-warn/40", dot: "bg-warn" },
+  safe: { label: "安全", cls: "bg-ok-bg text-ok border-ok/40", dot: "bg-ok" },
+  unavailable: { label: "未检出", cls: "bg-mute-bg text-mute border-mute/40", dot: "bg-mute" },
+};
+
 /** GPU 过载降并发原因 → 文案 */
 export const THROTTLE_TEXT: Record<string, string> = {
   normal: "运行正常",

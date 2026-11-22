@@ -6,7 +6,7 @@ import { Select } from "./ui/Select";
 import { fmt, fmtTimeFull } from "../lib/ui";
 import type { TasksPageData } from "../types";
 import { Card } from "./Card";
-import { StatusChip, TypeChip } from "./taskBits";
+import { NsfwBadge, StatusChip, TypeChip } from "./taskBits";
 
 /** 全部任务（原 tasks.html）：筛选 + 分页历史表（SQLite 持久化）。 */
 export function TasksPage() {
@@ -172,7 +172,10 @@ export function TasksPage() {
                     <td className="tnum px-3 py-2.5 text-right font-mono text-xs text-ink-2">
                       {t.task_type === "tts" && t.text_len ? `${t.text_len}字` : "–"}
                     </td>
-                    <td className="px-3 py-2.5"><StatusChip status={t.status} /></td>
+                    <td className="px-3 py-2.5">
+                      <StatusChip status={t.status} />
+                      <NsfwBadge n={t.nsfw} />
+                    </td>
                     <td className="tnum px-3 py-2.5 text-right font-mono text-xs text-ink-2">{fmt(t.queue_seconds)}s</td>
                     <td className="tnum px-3 py-2.5 text-right font-mono text-xs text-ink-2">{fmt(t.run_seconds)}s</td>
                     <td className="tnum px-3 py-2.5 font-mono text-xs text-ink-2">{fmtTimeFull(t.created_at)}</td>

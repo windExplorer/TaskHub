@@ -9,7 +9,7 @@ import { Tooltip } from "./ui/Tooltip";
 import { fmt, fmtTime } from "../lib/ui";
 import { useWsTasks } from "../hooks/useWsTasks";
 import type { ToastPush } from "./toastTypes";
-import { AnomalyBadge, ProgressCell, StatusChip, TypeChip, runSecondsCls } from "./taskBits";
+import { AnomalyBadge, NsfwBadge, ProgressCell, StatusChip, TypeChip, runSecondsCls } from "./taskBits";
 
 const MAX_SHOW = 100;
 
@@ -125,6 +125,7 @@ export function LiveTaskTable({ push }: { push: ToastPush }) {
                     <td className="px-3 py-2.5">
                       <StatusChip status={t.status} />
                       <AnomalyBadge a={t.anomaly} />
+                      <NsfwBadge n={t.nsfw} />
                       <ProgressCell t={t} />
                     </td>
                     <td className="tnum px-3 py-2.5 text-right font-mono text-xs text-ink-2">

@@ -51,6 +51,9 @@ class Task:
     text_len: int = field(default=0, compare=False)
     progress: Dict = field(default_factory=dict, compare=False)
     anomaly: Optional[Dict] = field(default=None, compare=False)
+    # NSFW 送检结论（{available, level, action, score, ...}）：label 模式下检测
+    # 异步跑在任务终结之后，由适配层经 set_task_nsfw 回写，随 on_task_update 落库。
+    nsfw: Optional[Dict] = field(default=None, compare=False)
     # progress：真实上游的实时进度（如 ComfyUI 节点/步数），由适配层从 /ws 事件折算后写入。
     # anomaly：自检巡检发现的异常（{level, code, msg, ts}），供 WebUI 标红与排查。
     # 语音任务文本字数（用于展示）；入队时从 payload 提取。
@@ -94,6 +97,7 @@ class Task:
             'text_len': self.text_len,
             'progress': dict(self.progress or {}),
             'anomaly': dict(self.anomaly) if self.anomaly else None,
+            'nsfw': dict(self.nsfw) if self.nsfw else None,
         }
 
 
@@ -460,6 +464,18 @@ class Scheduler:
             return
         task.anomaly = anomaly
         self._emit_async(task, live=True)
+
+    def set_task_nsfw(self, task: Task, verdict: Optional[Dict]):
+        """写入 NSFW 送检结论并落库 + 推 WebSocket。
+
+        label 模式检测异步完成时任务通常已终态（done），这里补写字段后走
+        完整 emit（storage.record 重新 INSERT OR REPLACE，终态不变仅补列）；
+        任务被内存淘汰护栏挤出 scheduler.tasks 时由调用方静默跳过。
+        """
+        if task.nsfw == verdict:
+            return
+        task.nsfw = verdict
+        self._emit_async(task)
 
     def confirm_task(self, task: Task, status: str = 'done', status_code: int = 200,
                      error: str = ''):

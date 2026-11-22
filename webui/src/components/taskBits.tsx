@@ -1,8 +1,8 @@
-/** 任务表格共享小件：类型/状态 chip、异常徽章、comfyui 进度格 */
+/** 任务表格共享小件：类型/状态 chip、异常徽章、NSFW 结论徽章、comfyui 进度格 */
 import { Info, OctagonX, TriangleAlert } from "lucide-react";
 
-import { ANOM_LABEL, ANOM_STYLE, STATUS_META, TYPE_META } from "../constants";
-import type { Task, TaskAnomaly, TaskStatus, TaskType } from "../types";
+import { ANOM_LABEL, ANOM_STYLE, NSFW_META, STATUS_META, TYPE_META } from "../constants";
+import type { Task, TaskAnomaly, TaskNsfw, TaskStatus, TaskType } from "../types";
 
 export function StatusChip({ status }: { status: TaskStatus }) {
   const m = STATUS_META[status];
@@ -32,6 +32,26 @@ export function AnomalyBadge({ a }: { a: TaskAnomaly | null }) {
     >
       <Icon size={11} />
       {ANOM_LABEL[a.code] ?? a.code}
+    </span>
+  );
+}
+
+/** NSFW 送检结论徽章：检测未完成（available=false）或无结论不显示 level 时归为「未检出」 */
+export function NsfwBadge({ n }: { n: TaskNsfw | null }) {
+  if (!n) return null;
+  const key = n.available === false || !n.level ? "unavailable" : String(n.level);
+  const m = NSFW_META[key] ?? NSFW_META.unavailable;
+  const score = typeof n.score === "number" ? ` ${n.score.toFixed(2)}` : "";
+  const title = n.available === false
+    ? `检测未完成：${n.error ?? "未知原因"}`
+    : `level=${n.level} action=${n.action ?? "-"} score=${n.score ?? "-"}（最严一张，共 ${n.images_checked ?? 1} 张）`;
+  return (
+    <span
+      title={title}
+      className={`tnum mt-1 inline-flex items-center whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[10px] ${m.cls}`}
+    >
+      {m.label}
+      {score}
     </span>
   );
 }
