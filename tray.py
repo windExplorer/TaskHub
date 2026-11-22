@@ -1,7 +1,7 @@
 """系统托盘图标（Windows/macOS/Linux）。
 
 仅 daemon 后台模式启用：图标运行在主线程，uvicorn 跑在子线程。
-菜单：打开控制台 / 开机自启（勾选）/ 退出。
+菜单：打开控制台 / 重启服务 / 开机自启（勾选）/ 退出。
 
 依赖 pystray + Pillow；未安装时调用方应降级为无托盘的纯后台模式。
 """
@@ -9,6 +9,8 @@ import logging
 import os
 import subprocess
 import sys
+import threading
+import urllib.request
 import webbrowser
 from pathlib import Path
 from typing import Callable, Optional
@@ -82,6 +84,21 @@ def run_tray(host: str, port: int, on_quit: Callable[[], None]) -> None:
     def on_open(icon, item):
         webbrowser.open(dashboard_url)
 
+    def on_restart(icon, item):
+        # 复用 WebUI 同款重启链路：POST /restart 由服务端拉起新进程（wait-free）
+        # 后本进程退出，托盘图标随之消失并由新进程重建。请求放后台线程，
+        # 避免阻塞托盘消息循环；重复点击由服务端 _restarting 守卫（409）。
+        def _post():
+            try:
+                req = urllib.request.Request(
+                    f'http://127.0.0.1:{port}/restart', data=b'', method='POST')
+                urllib.request.urlopen(req, timeout=5)
+                logger.info('[tray] restart requested via /restart')
+            except Exception as e:  # noqa: BLE001
+                logger.warning('[tray] restart request failed: %s', e)
+
+        threading.Thread(target=_post, name='tray-restart', daemon=True).start()
+
     def on_autostart(icon, item):
         nonlocal checked
         new = set_autostart(not checked)
@@ -95,6 +112,7 @@ def run_tray(host: str, port: int, on_quit: Callable[[], None]) -> None:
 
     menu = pystray.Menu(
         MenuItem(f'打开控制台', on_open, default=True),
+        MenuItem('重启服务', on_restart),
         MenuItem('开机自启', on_autostart, checked=lambda item: checked),
         MenuItem('退出', on_quit_called),
     )
