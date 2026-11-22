@@ -73,7 +73,14 @@ def _setup_logging(log_buffer: 'LogBuffer'):
     fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
     ms = logging.getLogger('middle_station')
     ms.setLevel(logging.INFO)
-    if not any(isinstance(h, logging.StreamHandler) for h in ms.handlers):
+    # 控制台通道仅在前台 TTY 挂：daemon 里 stderr 是重定向到 server.log 的句柄，
+    # 再挂 StreamHandler 会把每条中文日志按本地编码(GBK)重复写进 UTF-8 文件日志，
+    # 造成 server.log 混合编码（一半正常一半乱码，/logs/tail 显示乱行）。
+    try:
+        console_tty = sys.stderr is not None and sys.stderr.isatty()
+    except Exception:  # noqa: BLE001
+        console_tty = False
+    if console_tty and not any(isinstance(h, logging.StreamHandler) for h in ms.handlers):
         sh = logging.StreamHandler()
         sh.setFormatter(fmt)
         ms.addHandler(sh)
@@ -964,7 +971,11 @@ def _spawn_detached(cmd: list, log_file: Path) -> int:
         log_fh = open(log_file, 'a', encoding='utf-8', buffering=1)
     except OSError:
         log_fh = subprocess.DEVNULL
-    proc = subprocess.Popen(cmd, cwd=str(_root_dir), creationflags=creation,
+    # 子进程 stderr/stdout 被重定向进 log_file（UTF-8）；不强制 IO 编码的话，
+    # Python 会按本地编码(GBK)写 stderr —— 崩溃 traceback 里的中文变乱码，
+    # 与 FileHandler 的 UTF-8 混在一起把整个 server.log 搞成混合编码。
+    env = {**os.environ, 'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1'}
+    proc = subprocess.Popen(cmd, cwd=str(_root_dir), creationflags=creation, env=env,
                             stdin=subprocess.DEVNULL, stdout=log_fh, stderr=subprocess.STDOUT)
     return proc.pid
 

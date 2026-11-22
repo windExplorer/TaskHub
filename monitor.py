@@ -356,9 +356,13 @@ class ResourceMonitor:
             return out
 
         try:
+            # CREATE_NO_WINDOW：daemon 模式下本进程无控制台（pythonw/DETACHED），
+            # 不加的话 Windows 会给 powershell 新开一个可见控制台窗口（弹黑框，
+            # 每次设备面板探测都闪）。有控制台的前台运行时该 flag 也无副作用。
+            nt_flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
             r = subprocess.run(
                 ['powershell', '-NoProfile', '-NonInteractive', '-Command', self._PS_SENSORS],
-                capture_output=True, text=True, timeout=20)
+                capture_output=True, text=True, timeout=20, creationflags=nt_flags)
         except Exception as e:  # noqa: BLE001
             out['note'] = f'传感器探测失败：{type(e).__name__}'
             return out
