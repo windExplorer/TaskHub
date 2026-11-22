@@ -615,10 +615,15 @@ class ComfyAdapter:
             verdict = {'available': False, 'error': str(e)}
         finally:
             self._nsfw_results[real_pid] = verdict
-            self._attach_verdict_to_task(real_pid, verdict)
             ev = self._nsfw_events.get(real_pid)
             if ev is not None:
                 ev.set()
+            # 回写任务列表是锦上添花，必须放在 ev.set() 之后且吞掉自身异常：
+            # 它若挡住事件，/history 轮询会每次空等 wait_seconds 才拿到结论。
+            try:
+                self._attach_verdict_to_task(real_pid, verdict)
+            except Exception as e:  # noqa: BLE001
+                logger.warning('[nsfw] attach verdict to task %s failed: %s', real_pid, e)
         if verdict.get('available'):
             logger.info('[nsfw] task %s verdict: level=%s action=%s score=%s',
                         real_pid, verdict.get('level'), verdict.get('action'), verdict.get('score'))
@@ -631,13 +636,13 @@ class ComfyAdapter:
         补写 nsfw 字段并经 set_task_nsfw 重新落库/推送；任务已被淘汰护栏挤出
         scheduler.tasks（或检测降级无结论）时静默跳过。
         """
-        if self.scheduler is None:
+        if self._scheduler is None:
             return
         virtual_pid = self._vpids_by_real.get(real_pid)
         task_id = self.task_ids.get(virtual_pid) if virtual_pid else None
-        task = self.scheduler.tasks.get(task_id) if task_id else None
+        task = self._scheduler.tasks.get(task_id) if task_id else None
         if task is not None:
-            self.scheduler.set_task_nsfw(task, verdict)
+            self._scheduler.set_task_nsfw(task, verdict)
 
     def _nsfw_blocked_entry(self, prompt_id: str, verdict: Dict) -> Dict:
         """block 模式下的合成 history 条目：插件立刻收到明确失败，不泄露图片。"""
