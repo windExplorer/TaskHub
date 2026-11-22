@@ -365,7 +365,16 @@ function NsfwService({ n, onChanged }: { n: NsfwUpstream; onChanged: () => void 
   const state = !n.enabled ? "未启用" : n.reachable ? "在线" : "不可访问";
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
-  const loaded = !!(h?.main_loaded && h?.aux_loaded);
+  // nsfw-check v0.3 healthz：5 组模型；有 enabled 字典按启用过滤，旧版退回主/辅两项
+  const enabledKeys = h?.enabled && Object.keys(h.enabled).length > 0 ? h.enabled : null;
+  const modelRows = [
+    { key: "main", name: "主判", ready: h?.main_ready, loaded: h?.main_loaded },
+    { key: "nudenet", name: "辅判", ready: h?.aux_ready, loaded: h?.aux_loaded },
+    { key: "anime_segm", name: "动漫分割", ready: h?.anime_segm_ready, loaded: h?.anime_segm_loaded },
+    { key: "nevermore", name: "Nevermore", ready: h?.nevermore_ready, loaded: h?.nevermore_loaded },
+    { key: "wd_rating", name: "WD评级", ready: h?.wd_rating_ready, loaded: h?.wd_rating_loaded },
+  ].filter((m) => (enabledKeys ? !!enabledKeys[m.key] : m.key === "main" || m.key === "nudenet"));
+  const loaded = modelRows.length > 0 && modelRows.every((m) => !!m.loaded);
 
   const act = async (kind: "warm" | "release") => {
     setBusy(true);
@@ -398,8 +407,8 @@ function NsfwService({ n, onChanged }: { n: NsfwUpstream; onChanged: () => void 
           <Kv label="检测模型" value={h.model ?? "–"} />
           <Kv
             label="模型就绪"
-            value={`主 ${h.main_ready ? "是" : "否"} · 辅 ${h.aux_ready ? "是" : "否"}`}
-            title={`已加载：主 ${h.main_loaded ? "是" : "否"} · 辅 ${h.aux_loaded ? "是" : "否"}`}
+            value={modelRows.map((m) => `${m.name} ${m.ready ? "是" : "否"}`).join(" · ")}
+            title={`已加载：${modelRows.map((m) => `${m.name} ${m.loaded ? "是" : "否"}`).join(" · ")}`}
           />
           <Kv label="推理设备" value={h.device ?? "–"} />
           <Kv label="空闲" value={h.idle_sec === undefined ? "–" : `${h.idle_sec}s`} />

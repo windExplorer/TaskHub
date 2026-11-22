@@ -564,6 +564,43 @@ def _register_routes(app: FastAPI):
         ok = await nsfw_checker.release()
         return {'ok': ok}
 
+    @app.post('/nsfw/detect/simple')
+    async def nsfw_detect_proxy_api(request: Request):
+        """插件指令远程检测中转：multipart 原样转发 nsfw-check /detect/simple。
+
+        插件无需配置 nsfw-check 地址/令牌——与本站送检共用同一 nsfw 配置，
+        Token 注入只发生在本站。nsfw-check 侧记 source=plugin-cmd（需 8890
+        重启后生效，旧版归 api）。"""
+        if nsfw_checker is None:
+            raise HTTPException(status_code=404, detail='nsfw checker is disabled')
+        body = await request.body()
+        ctype = request.headers.get('content-type', 'application/octet-stream')
+        status, payload = await nsfw_checker.proxy_detect(body, ctype)
+        return JSONResponse(payload, status_code=status)
+
+    @app.post('/nsfw/review')
+    async def nsfw_review_proxy_api(request: Request):
+        """人工复核结论写通中转：{record_id, decision, note} → nsfw-check /records/{id}/review。
+
+        decision 只接受 pass/block（pending 撤销语义 nsfw-check 不支持，插件侧
+        会跳过同步）。返回 nsfw-check 原响应。"""
+        if nsfw_checker is None:
+            raise HTTPException(status_code=404, detail='nsfw checker is disabled')
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail='invalid json body')
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=400, detail='body must be an object')
+        rid = str(data.get('record_id') or '').strip()
+        decision = str(data.get('decision') or '').strip().lower()
+        if not rid or decision not in ('pass', 'block'):
+            raise HTTPException(status_code=400,
+                                detail='record_id and decision(pass|block) are required')
+        status, payload = await nsfw_checker.proxy_review(rid, decision,
+                                                          str(data.get('note') or ''))
+        return JSONResponse(payload, status_code=status)
+
     @app.put('/config')
     async def config_save(request: Request):
         """保存配置到 middle-station.yaml（业务开关同时即时生效，其余需重启）。"""

@@ -262,6 +262,13 @@ export interface NsfwUpstream {
     aux_ready?: boolean;
     main_loaded?: boolean;
     aux_loaded?: boolean;
+    anime_segm_ready?: boolean;
+    anime_segm_loaded?: boolean;
+    nevermore_ready?: boolean;
+    nevermore_loaded?: boolean;
+    wd_rating_ready?: boolean;
+    wd_rating_loaded?: boolean;
+    enabled?: Record<string, boolean>;
     device?: string;
     idle_sec?: number;
     model?: string;

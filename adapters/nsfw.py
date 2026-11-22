@@ -5,7 +5,7 @@
 """
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import httpx
 
@@ -49,7 +49,13 @@ class NsfwChecker:
 
     async def check(self, image: bytes, filename: str,
                     subfolder: str = '') -> Optional[dict]:
-        """送检一张图。返回 nsfw-check 的 detect JSON；失败返回降级 verdict。"""
+        """送检一张图。返回 nsfw-check 的 detect JSON；失败返回降级 verdict。
+
+        v0.3 起走 /detect/simple（精简响应，无部位坐标框等调试信息），
+        业务字段 level/action/score/diverge/labels/record_id 齐全。
+        simple 无 available 字段，200 即判定有效——补 True 维持
+        history['nsfw'] 契约（comfy 聚合日志与插件门控都读它）。
+        """
         try:
             files = {'file': (filename, image, 'application/octet-stream')}
             data = {
@@ -57,16 +63,60 @@ class NsfwChecker:
                 'image_url': self._image_url_for(subfolder, filename),
             }
             r = await self._client.post(
-                f'{self.base_url}/detect', files=files, data=data,
+                f'{self.base_url}/detect/simple', files=files, data=data,
                 headers=self._headers())
             if r.status_code != 200:
                 logger.warning('[nsfw] detect http %s: %s', r.status_code, r.text[:200])
                 return {'available': False, 'error': f'http {r.status_code}'}
             body = r.json()
+            body['available'] = bool(body.get('ok', True))
             return body
         except Exception as e:  # noqa: BLE001
             logger.warning('[nsfw] detect failed: %s', e)
             return {'available': False, 'error': str(e)}
+
+    async def proxy_detect(self, body: bytes, content_type: str) -> Tuple[int, dict]:
+        """把 multipart 请求体原样转发到 nsfw-check /detect/simple。
+
+        插件指令远程检测的中转：插件无需配置 nsfw-check 地址/令牌（与本站
+        送检共用同一配置），Token 注入也只发生在本站。返回 (status, json)；
+        上游不可达等异常降级为 (502, {'ok': False, ...})，绝不抛异常。
+        """
+        try:
+            r = await self._client.post(
+                f'{self.base_url}/detect/simple',
+                content=body,
+                headers={**self._headers(), 'Content-Type': content_type},
+            )
+            try:
+                payload = r.json()
+            except Exception:  # noqa: BLE001
+                payload = {'ok': False, 'error': f'invalid json from upstream (http {r.status_code})'}
+            return r.status_code, payload
+        except Exception as e:  # noqa: BLE001
+            logger.warning('[nsfw] proxy detect failed: %s', e)
+            return 502, {'ok': False, 'error': str(e)}
+
+    async def proxy_review(self, record_id: str, decision: str, note: str = '') -> Tuple[int, dict]:
+        """人工复核结论写通中转：POST nsfw-check /records/{id}/review。
+
+        decision 只接受 pass/block（与 nsfw-check 契约一致，端点层已校验）。
+        返回 (status, json)；异常降级 (502, {...})。
+        """
+        try:
+            r = await self._client.post(
+                f'{self.base_url}/records/{record_id}/review',
+                json={'decision': decision, 'note': note or 'synced from menghui review'},
+                headers=self._headers(),
+            )
+            try:
+                payload = r.json()
+            except Exception:  # noqa: BLE001
+                payload = {'ok': False, 'error': f'invalid json from upstream (http {r.status_code})'}
+            return r.status_code, payload
+        except Exception as e:  # noqa: BLE001
+            logger.warning('[nsfw] proxy review failed: %s', e)
+            return 502, {'ok': False, 'error': str(e)}
 
     async def close(self):
         await self._client.aclose()
@@ -78,16 +128,29 @@ class NsfwChecker:
             self._warm_lock = asyncio.Lock()
         return self._warm_lock
 
+    # healthz enabled 键 -> loaded 字段名映射（v0.3 起 5 组模型）
+    _LOADED_KEYS = {'main': 'main_loaded', 'nudenet': 'aux_loaded',
+                    'anime_segm': 'anime_segm_loaded',
+                    'nevermore': 'nevermore_loaded',
+                    'wd_rating': 'wd_rating_loaded'}
+
     async def warm(self, force: bool = False) -> bool:
         """请 nsfw-check 预热/加载模型（POST /models/load）。
 
-        非 force 时先探测：两模型都 loaded 就跳过，避免无谓开销。
+        非 force 时先探测：所有已启用模型都 loaded 才跳过（否则 nevermore/
+        wd_rating 等副模型永远预热不到，首检吃冷启动）。
         失败一律降级为 False，绝不阻塞送检主流程。
         """
         if not force:
             health = await self.probe(timeout=2.0)
-            if isinstance(health, dict) and health.get('main_loaded') and health.get('aux_loaded'):
-                return True
+            if isinstance(health, dict):
+                enabled = health.get('enabled') or {}
+                if enabled:
+                    if all(bool(health.get(self._LOADED_KEYS.get(name, '')))
+                           for name, on in enabled.items() if on):
+                        return True
+                elif health.get('main_loaded') and health.get('aux_loaded'):
+                    return True  # 旧版 healthz 无 enabled 字典，退回主/辅判定
         lock = self._get_warm_lock()
         async with lock:
             try:
