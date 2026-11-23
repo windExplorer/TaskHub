@@ -134,7 +134,10 @@ class ServiceManager:
                 env[str(k)] = str(v)
             env.setdefault('PYTHONIOENCODING', 'utf-8')
             env.setdefault('PYTHONUTF8', '1')
-            creation = getattr(subprocess, 'DETACHED_PROCESS', 0) if os.name == 'nt' else 0
+            # uv 建的 venv 里 python/pythonw 是 45KB 转发器，会再拉起基础解释器的
+            # python.exe；DETACHED_PROCESS 下那个子进程会自己新建可见控制台（黑框）。
+            # CREATE_NO_WINDOW 给整个进程树一个无窗口控制台，关闭父终端也不会误杀。
+            creation = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
             try:
                 proc = subprocess.Popen(
                     cmd, cwd=str(cwd), env=env, creationflags=creation,
