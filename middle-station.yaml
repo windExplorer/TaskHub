@@ -50,73 +50,82 @@ nsfw:
   wait_seconds: 15.0
   output_dir: null
   prewarm: true
-# ===== 外部服务面板（启动/停止/重启/状态监听） =====
-# command 用列表写，第一项是可执行文件或解释器；不要写 .bat（会弹 cmd 黑框）。
-# cwd / log 相对路径基于 TaskHub 根目录；port 用于识别“由第三方启动器拉起”的进程。
 services:
   enabled: true
-  check_interval: 10           # 状态巡检周期（秒）
-  start_grace: 90              # 启动宽限期（秒）：期间不判异常、不告警
-  fail_threshold: 2            # 连续 N 次检测失败才判定服务异常
-  restart_window: 300          # 自动拉起统计窗口（秒）
-  restart_cooldown: 60         # 两次自动拉起最小间隔（秒）
-  max_restart_attempts: 3      # 窗口内最多自动拉起次数（0=关闭）
+  check_interval: 10
+  start_grace: 90
+  fail_threshold: 2
+  restart_window: 300
+  restart_cooldown: 60
+  max_restart_attempts: 3
   items:
-    - name: taskhub
-      label: TaskHub（本服务）
-      enabled: true
-      managed: false
-      self: true
-      autostart: false
-      auto_restart: false
-      health_url: http://127.0.0.1:9000/health
-      port: 9000
-      log: logs/services/taskhub.log
-    - name: comfyui
-      label: ComfyUI
-      enabled: true
-      managed: true
-      autostart: true
-      auto_restart: false      # 默认只告警，不自动拉起
-      # 不用第三方启动器：启动器会再拉一个带控制台的 python（黑框）。
-      # 这里用启动器配置里记录的真实 Python 与参数；面板会自动换成同目录 pythonw.exe。
-      cwd: D:/AI/ComfyUI-aki/ComfyUI-aki-v3/ComfyUI
-      command: ["D:/AI/ComfyUI-aki/ComfyUI-aki-v3/python/python.exe", "-s",
-                "D:/AI/ComfyUI-aki/ComfyUI-aki-v3/ComfyUI/main.py",
-                "--windows-standalone-build", "--disable-auto-launch",
-                "--preview-method", "auto", "--fast", "fp16_accumulation",
-                "--cuda-malloc", "--enable-cors-header", "--listen", "0.0.0.0",
-                "--enable-compress-response-body"]
-      health_url: http://127.0.0.1:8188/system_stats
-      port: 8188
-      process_match: ["ComfyUI_TE模式启动器.exe"]
-      log: logs/services/comfyui.log
-    - name: tts-serve
-      label: TTS-Serve（Qwen3 / CosyVoice）
-      enabled: true
-      managed: true
-      autostart: true
-      auto_restart: false
-      cwd: D:/AI/TTS_SERVE/tts_serve
-      command: [".venv-qwen3/Scripts/python.exe", "-m", "app.serve"]
-      health_url: http://127.0.0.1:50001/
-      port: 50001
-      log: logs/services/tts-serve.log
-    - name: nsfw-check
-      label: NSFW-Check
-      enabled: true
-      managed: true
-      autostart: true
-      auto_restart: false
-      cwd: D:/AI/nsfw-check
-      command: [".venv/Scripts/python.exe", "run.py"]
-      env:
-        DEVICE: cuda
-        PRECISION: bf16
-      health_url: http://127.0.0.1:8890/healthz
-      port: 8890
-      log: logs/services/nsfw-check.log
-# ===== 告警通道：Gotify 优先，邮件次之；默认关闭，填好参数后在面板里打开 =====
+  - name: taskhub
+    label: TaskHub（本服务）
+    enabled: true
+    managed: false
+    self: true
+    autostart: false
+    auto_restart: false
+    health_url: http://127.0.0.1:9000/health
+    port: 9000
+    log: logs/services/taskhub.log
+  - name: comfyui
+    label: ComfyUI
+    enabled: true
+    managed: true
+    autostart: true
+    auto_restart: false
+    cwd: D:/AI/ComfyUI-aki/ComfyUI-aki-v3/ComfyUI
+    command:
+    - D:/AI/ComfyUI-aki/ComfyUI-aki-v3/python/python.exe
+    - -s
+    - D:/AI/ComfyUI-aki/ComfyUI-aki-v3/ComfyUI/main.py
+    - --windows-standalone-build
+    - --disable-auto-launch
+    - --preview-method
+    - auto
+    - --fast
+    - fp16_accumulation
+    - --cuda-malloc
+    - --enable-cors-header
+    - --listen
+    - 0.0.0.0
+    - --enable-compress-response-body
+    health_url: http://127.0.0.1:8188/system_stats
+    port: 8188
+    process_match:
+    - ComfyUI_TE模式启动器.exe
+    log: logs/services/comfyui.log
+  - name: tts-serve
+    label: TTS-Serve（Qwen3 / CosyVoice）
+    enabled: true
+    managed: true
+    autostart: true
+    auto_restart: true
+    cwd: D:/AI/TTS_SERVE/tts_serve
+    command:
+    - .venv-qwen3/Scripts/python.exe
+    - -m
+    - app.serve
+    health_url: http://127.0.0.1:50001/
+    port: 50001
+    log: logs/services/tts-serve.log
+  - name: nsfw-check
+    label: NSFW-Check
+    enabled: true
+    managed: true
+    autostart: true
+    auto_restart: true
+    cwd: D:/AI/nsfw-check
+    command:
+    - .venv/Scripts/python.exe
+    - run.py
+    env:
+      DEVICE: cuda
+      PRECISION: bf16
+    health_url: http://127.0.0.1:8890/healthz
+    port: 8890
+    log: logs/services/nsfw-check.log
 alerts:
   enabled: false
   cooldown_seconds: 60
@@ -127,16 +136,16 @@ alerts:
   channels:
     gotify:
       enabled: false
-      url: ''                  # 例如 http://127.0.0.1:80
+      url: ''
       token: ''
       priority: 8
     email:
       enabled: false
       host: ''
       port: 465
-      ssl: true                # false 时按 starttls 决定是否 STARTTLS
+      ssl: true
       starttls: false
       user: ''
       password: ''
       from_addr: ''
-      to_addrs: []             # 多个收件人写列表
+      to_addrs: []

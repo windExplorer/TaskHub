@@ -4,6 +4,7 @@ import {
   Activity,
   FileText,
   Play,
+  Power,
   RotateCw,
   Send,
   Settings,
@@ -61,8 +62,10 @@ interface LogView {
 
 export function ServicePanel({
   push,
+  onShutdown,
 }: {
   push: (kind: ToastKind, title: string, detail?: string) => void;
+  onShutdown: () => void;
 }) {
   const [data, setData] = useState<ServicesResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -198,6 +201,13 @@ export function ServicePanel({
           </button>
           <button className={btn} onClick={() => void openSettings()}>
             <Settings size={13} /> 设置
+          </button>
+          <button
+            className={`${btn} border-err/40 text-err hover:border-err`}
+            onClick={onShutdown}
+            title="只关闭 TaskHub，ComfyUI / TTS-Serve / NSFW-Check 保持运行"
+          >
+            <Power size={13} /> 仅关闭 TaskHub
           </button>
         </div>
       </div>

@@ -55,7 +55,9 @@ export default function App() {
         {tab === "dash" && (
           <DashboardPage monitor={monitor} history={history} push={push} onNavigate={setTab} />
         )}
-        {tab === "services" && <ServicePanel push={push} />}
+        {tab === "services" && (
+          <ServicePanel push={push} onShutdown={() => setShutdownOpen(true)} />
+        )}
         {tab === "tasks" && <TasksPage />}
         {tab === "stats" && <StatsPage />}
         {tab === "docs" && <ApiDocsPage />}

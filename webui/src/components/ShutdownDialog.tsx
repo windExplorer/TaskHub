@@ -70,10 +70,11 @@ export function ShutdownDialog({
                 </RDialog.Close>
               </div>
               <RDialog.Description className="mb-5 text-sm text-ink-2">
-                确认关闭 TaskHub？关闭后 WebUI 将立即失联，需要用
-                <code className="mx-1 rounded bg-surface-2 px-1 py-0.5 font-mono text-accent">start.bat</code>
+                确认关闭 TaskHub？只会关闭中转站本身，ComfyUI / TTS-Serve / NSFW-Check 会继续运行。
+                WebUI 将立即失联，需要用
+                <code className="mx-1 rounded bg-surface-2 px-1 py-0.5 font-mono text-accent">start_daemon.bat</code>
                 或
-                <code className="mx-1 rounded bg-surface-2 px-1 py-0.5 font-mono text-accent">python main.py start</code>
+                <code className="mx-1 rounded bg-surface-2 px-1 py-0.5 font-mono text-accent">python main.py start --daemon</code>
                 重新启动。
               </RDialog.Description>
               <div className="flex justify-end gap-2">
