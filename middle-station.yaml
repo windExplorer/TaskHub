@@ -78,8 +78,15 @@ services:
       managed: true
       autostart: true
       auto_restart: false      # 默认只告警，不自动拉起
-      cwd: D:/AI/ComfyUI-aki/ComfyUI-aki-v3/ComfyUI TE模式启动器 v7.2.0
-      command: ["ComfyUI_TE模式启动器.exe"]
+      # 不用第三方启动器：启动器会再拉一个带控制台的 python（黑框）。
+      # 这里用启动器配置里记录的真实 Python 与参数；面板会自动换成同目录 pythonw.exe。
+      cwd: D:/AI/ComfyUI-aki/ComfyUI-aki-v3/ComfyUI
+      command: ["D:/AI/ComfyUI-aki/ComfyUI-aki-v3/python/python.exe", "-s",
+                "D:/AI/ComfyUI-aki/ComfyUI-aki-v3/ComfyUI/main.py",
+                "--windows-standalone-build", "--disable-auto-launch",
+                "--preview-method", "auto", "--fast", "fp16_accumulation",
+                "--cuda-malloc", "--enable-cors-header", "--listen", "0.0.0.0",
+                "--enable-compress-response-body"]
       health_url: http://127.0.0.1:8188/system_stats
       port: 8188
       process_match: ["ComfyUI_TE模式启动器.exe"]

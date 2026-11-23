@@ -123,6 +123,7 @@ class ServiceManager:
             cwd = self._resolve(item.get('cwd') or '.')
             if not cwd.is_dir():
                 raise ValueError(f'{name}: cwd not found: {cwd}')
+            cmd = self._no_console_command(cmd, cwd)
             log_path = self._resolve(item.get('log') or f'logs/services/{name}.log')
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_fh = open(log_path, 'a', encoding='utf-8', buffering=1)
@@ -197,6 +198,22 @@ class ServiceManager:
             except ValueError:
                 cmd = cmd.split()
         return [str(x).strip().strip('"') for x in cmd if str(x).strip()]
+
+    @staticmethod
+    def _no_console_command(cmd: List[str], cwd: Path) -> List[str]:
+        """Python 控制台程序换成同目录 pythonw.exe，避免服务启动时弹终端黑框。"""
+        if not cmd:
+            return cmd
+        exe = Path(cmd[0])
+        if not exe.is_absolute():
+            candidate = cwd / exe
+            if candidate.exists():
+                exe = candidate
+        if exe.name.lower() == 'python.exe':
+            pyw = exe.with_name('pythonw.exe')
+            if pyw.exists():
+                return [str(pyw)] + cmd[1:]
+        return cmd
 
     def _resolve(self, path: str) -> Path:
         p = Path(str(path)).expanduser()

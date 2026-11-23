@@ -674,7 +674,7 @@ def _register_routes(app: FastAPI):
             try:
                 host = cfg.server.host
                 port = cfg.server.port
-                cmd = [sys.executable, str(Path(__file__).resolve()), 'start',
+                cmd = [_consoleless_python(), str(Path(__file__).resolve()), 'start',
                        '--host', host, '--port', str(port), '--config', _config_path,
                        '--wait-free', '--tray']
                 pid = _spawn_detached(cmd, _log_file)
@@ -1058,6 +1058,20 @@ def cli():
     pass
 
 
+def _consoleless_python() -> str:
+    """返回无控制台的 Python（pythonw.exe）：重启/后台启动不再弹黑框。"""
+    if os.name == 'nt':
+        venv_pyw = _root_dir / '.venv' / 'Scripts' / 'pythonw.exe'
+        if venv_pyw.exists():
+            return str(venv_pyw)
+        exe = Path(sys.executable)
+        if exe.name.lower() == 'python.exe':
+            pyw = exe.with_name('pythonw.exe')
+            if pyw.exists():
+                return str(pyw)
+    return sys.executable
+
+
 def _spawn_detached(cmd: list, log_file: Path) -> int:
     """启动一个真正脱离终端的后台进程，stdout/stderr 追加到 log_file。返回子进程 pid。
 
@@ -1121,7 +1135,7 @@ def start(host, port, config, reload, wait_free, daemon, tray):
         if not _wait_port_free(h, p):
             click.echo(f'port {h}:{p} still busy, abort daemon start')
             return
-        child_cmd = [sys.executable, str(Path(__file__).resolve()), 'start',
+        child_cmd = [_consoleless_python(), str(Path(__file__).resolve()), 'start',
                      '--host', h, '--port', str(p), '--config', config or _config_path,
                      '--wait-free', '--tray']
         if reload:
