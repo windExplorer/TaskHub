@@ -128,6 +128,9 @@ class Config:
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     inspector: InspectorConfig = field(default_factory=InspectorConfig)
     nsfw: NsfwConfig = field(default_factory=NsfwConfig)
+    # 外部服务面板 + 告警通道（自由结构，直接按 YAML 原样保存）
+    services: Dict = field(default_factory=dict)
+    alerts: Dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> 'Config':
@@ -240,6 +243,10 @@ class Config:
         cfg.nsfw.output_dir = _env('MIDDLE_NSFW_OUTPUT_DIR') or n.get('output_dir', cfg.nsfw.output_dir)
         cfg.nsfw.prewarm = _env_bool('MIDDLE_NSFW_PREWARM', bool(n.get('prewarm', cfg.nsfw.prewarm)))
 
+        # services / alerts：结构化自由字段，原样保留（服务面板单独编辑写回）
+        cfg.services = dict(data.get('services') or {})
+        cfg.alerts = dict(data.get('alerts') or {})
+
         return cfg
 
     def to_dict(self) -> Dict:
@@ -301,6 +308,8 @@ class Config:
                 'output_dir': self.nsfw.output_dir,
                 'prewarm': self.nsfw.prewarm,
             },
+            'services': self.services,
+            'alerts': self.alerts,
         }
 
     def save(self, path: Optional[str] = None) -> str:

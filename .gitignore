@@ -11,11 +11,13 @@ tasks_export.json
 taskhub.pid
 logs/
 
-# IDE / OS
+# IDE / OS / 工具元数据
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
+.reasonix/
+*.bak
 
 # WebUI（React SPA，源码在 webui/）
 webui/node_modules/

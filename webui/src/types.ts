@@ -332,3 +332,38 @@ export interface LogLine {
   level: string;
   message: string;
 }
+
+// ---------- 外部服务面板 ----------
+
+export interface ServiceInfo {
+  name: string;
+  label: string;
+  state: "running" | "starting" | "unhealthy" | "stopped" | "error";
+  health: "ok" | "fail" | "unknown";
+  health_detail: string;
+  health_url: string;
+  alive: boolean;
+  in_grace: boolean;
+  pid: number | null;
+  cpu_percent: number;
+  rss_mb: number;
+  uptime_s: number | null;
+  managed: boolean;
+  self: boolean;
+  autostart: boolean;
+  auto_restart: boolean;
+  log: string;
+  error?: string;
+}
+
+export interface ServicesResp {
+  enabled: boolean;
+  check_interval: number;
+  start_grace: number;
+  services: ServiceInfo[];
+}
+
+export interface ServicesConfigResp {
+  services: Record<string, any>;
+  alerts: Record<string, any>;
+}

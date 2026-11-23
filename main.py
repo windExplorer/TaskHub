@@ -36,7 +36,9 @@ from adapters.tts import clean_prompt_text
 from config import Config
 from inspector import UpstreamInspector
 from monitor import ResourceMonitor
+from notifier import Notifier
 from scheduler import Scheduler, Task
+from service_manager import ServiceManager
 from storage import Storage
 
 logger = logging.getLogger('middle_station.main')
@@ -120,6 +122,8 @@ tts: Optional[TTSAdapter] = None
 comfy: Optional[ComfyAdapter] = None
 nsfw_checker: Optional[NsfwChecker] = None
 inspector: Optional[UpstreamInspector] = None
+notifier: Optional[Notifier] = None
+service_manager: Optional[ServiceManager] = None
 broadcaster: Optional['WSBroadcaster'] = None
 log_buffer: Optional['LogBuffer'] = None
 _app: Optional[FastAPI] = None
@@ -206,11 +210,13 @@ async def lifespan(app: FastAPI):
 
     comfy.start()                 # 订阅真实 ComfyUI 的进度事件（/ws）
     inspector.start()             # 上游自检巡检
+    await service_manager.start()  # 外部服务面板：开机自启 + 状态监听
     logger.info('TaskHub up: http://%s:%s (tts=%s, comfyui=%s, client_id=%s, nsfw=%s)',
                 cfg.server.host, cfg.server.port, cfg.tts.base_url,
                 cfg.comfyui.base_url, comfy.client_id,
                 f'{cfg.nsfw.mode}@{cfg.nsfw.base_url}' if nsfw_checker is not None else 'off')
     yield
+    await service_manager.stop()
     await inspector.stop()
     await tts.stop()
     await monitor.stop()
@@ -422,6 +428,18 @@ async def _parse_tts_form(form) -> Dict:
         'prompt_wav_path': prompt_wav_path,
         'prompt_wav': wav_bytes,
     }
+
+
+def _masked_services_config() -> Dict:
+    """服务面板配置：隐藏 Gotify token / SMTP 密码，避免 GET 接口泄露。"""
+    import copy
+    alerts = copy.deepcopy(cfg.alerts)
+    channels = alerts.get('channels') or {}
+    for name, field in (('gotify', 'token'), ('email', 'password')):
+        channel = channels.get(name) or {}
+        if channel.get(field):
+            channel[field] = '******'
+    return {'services': copy.deepcopy(cfg.services), 'alerts': alerts}
 
 
 # ============================================================================
@@ -818,6 +836,89 @@ def _register_routes(app: FastAPI):
             raise HTTPException(status_code=status, detail=content.decode('utf-8', 'replace')[:200])
         return Response(content=content, media_type=ctype or 'application/octet-stream')
 
+    # ---- 外部服务面板 ----
+    def _service_err(e: Exception) -> HTTPException:
+        if isinstance(e, KeyError):
+            return HTTPException(status_code=404, detail=f'service not found: {e}')
+        if isinstance(e, (ValueError, RuntimeError)):
+            return HTTPException(status_code=400, detail=str(e))
+        return HTTPException(status_code=500, detail=str(e))
+
+    @app.get('/services')
+    async def services_api():
+        """外部服务列表与状态（进程 + 健康检查 + 自启/自愈开关）。"""
+        return await service_manager.status()
+
+    @app.get('/services/config')
+    async def services_config_api():
+        """服务面板与告警配置（token/密码脱敏）。"""
+        return _masked_services_config()
+
+    @app.put('/services/config')
+    async def services_config_save(request: Request):
+        """写回服务面板与告警配置；掩码值保留原密钥，避免改配置时清空密码。"""
+        global cfg
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail='invalid json body')
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=400, detail='config must be an object')
+        services = data.get('services')
+        alerts = data.get('alerts')
+        if not isinstance(services, dict) or not isinstance(alerts, dict):
+            raise HTTPException(status_code=400, detail='services and alerts must be objects')
+        old_channels = cfg.alerts.get('channels') or {}
+        channels = alerts.get('channels') or {}
+        for cname, field in (('gotify', 'token'), ('email', 'password')):
+            channel = channels.get(cname) or {}
+            if channel.get(field) == '******':
+                channel[field] = (old_channels.get(cname) or {}).get(field, '')
+        cfg.services = services
+        cfg.alerts = alerts
+        try:
+            cfg.save(_config_path)
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f'write config failed: {e}')
+        return {'ok': True, 'config_file': _config_path}
+
+    @app.post('/services/alerts/test')
+    async def services_alert_test():
+        """发送一条测试告警，校验 Gotify / 邮件通道配置。"""
+        result = await notifier.send(
+            '[TaskHub] 告警通道测试',
+            f'这是一条来自 TaskHub 的测试告警（{time.strftime("%Y-%m-%d %H:%M:%S")}）。',
+            'info', force=True)
+        return {'ok': True, 'results': result}
+
+    @app.post('/services/{name}/start')
+    async def service_start_api(name: str):
+        try:
+            return await service_manager.start_service(name)
+        except Exception as e:  # noqa: BLE001
+            raise _service_err(e)
+
+    @app.post('/services/{name}/stop')
+    async def service_stop_api(name: str):
+        try:
+            return await service_manager.stop_service(name)
+        except Exception as e:  # noqa: BLE001
+            raise _service_err(e)
+
+    @app.post('/services/{name}/restart')
+    async def service_restart_api(name: str):
+        try:
+            return await service_manager.restart_service(name)
+        except Exception as e:  # noqa: BLE001
+            raise _service_err(e)
+
+    @app.get('/services/{name}/logs')
+    async def service_logs_api(name: str, lines: int = 200):
+        try:
+            return service_manager.logs(name, lines)
+        except Exception as e:  # noqa: BLE001
+            raise _service_err(e)
+
     # ---- WebSocket ----
     @app.websocket('/ws/monitor')
     async def ws_monitor(websocket: WebSocket):
@@ -906,7 +1007,7 @@ def _register_routes(app: FastAPI):
 # 应用工厂
 # ============================================================================
 def create_app(config_path: Optional[str] = None) -> FastAPI:
-    global cfg, monitor, scheduler, storage, tts, comfy, inspector, broadcaster, log_buffer, _app, nsfw_checker, _config_path
+    global cfg, monitor, scheduler, storage, tts, comfy, inspector, broadcaster, log_buffer, _app, nsfw_checker, notifier, service_manager, _config_path
 
     _apply_log_filters()
 
@@ -934,6 +1035,8 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     inspector = UpstreamInspector(cfg, scheduler, comfy, storage, tts=tts, monitor=monitor)
     broadcaster = WSBroadcaster()
     log_buffer = LogBuffer(cfg.server.log_max_lines)
+    notifier = Notifier(lambda: cfg.alerts)
+    service_manager = ServiceManager(lambda: cfg.services, _root_dir, notifier)
 
     _setup_logging(log_buffer)
     # 上次进程遗留的 running/queued 行只存在于 DB，启动时收敛为终态（避免任务页永远显示运行中）

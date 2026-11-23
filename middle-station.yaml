@@ -1,65 +1,135 @@
-# TaskHub 配置
-# 环境变量（MIDDLE_*）优先于本文件
-
 server:
   host: 0.0.0.0
   port: 9000
-  max_concurrent: 1          # 全局最大并发任务数（收紧避免 TTS/ComfyUI 同时挤爆显存）
-  # 硬约束：queue_wait + infer_timeout ≤ 插件读超时（语音插件默认 150s）− 10s 余量 = 140s。
-  # 否则插件会先断连：中转站算完的音频被丢弃（白算）+ 插件回退纯文字并进冷却。
-  # 实测：TTS 合成 p50≈8s / p95≈20-38s / p99≈57-71s（长尾 ~118s）；绘图 p50≈22s / p95≈50s。
-  # 取 30 + 110 = 140：合成侧留足（p99 有 39s 余量），排队侧 30s 覆盖约八成出图时长。
-  queue_wait: 30              # 入队等待超时（秒），超时回 429；0 = 不限制（由客户端自行掐超时）
-  infer_timeout: 110          # 单次推理超时（秒），超时回 504；0 = 不限制（由客户端自行掐超时）
-  vram_cleanup_on_type_switch: true  # 任务类型切换（tts<->comfyui）后、执行新任务前先清理残留显存
+  max_concurrent: 1
+  queue_wait: 30
+  infer_timeout: 110
   db_path: ./middle-station.db
   log_max_lines: 100
-  frontend_dir: ./webui/dist  # React SPA 构建产物（源码在 webui/，npm run build 生成）
-
+  frontend_dir: ./webui/dist
+  vram_cleanup_on_type_switch: true
+  tasks_enabled:
+    tts: true
+    comfyui: true
 tts:
-  base_url: http://127.0.0.1:50002   # 真实 CosyVoice 后端（插件配置指向本中转站）
-  sample_rate: 24000                 # 兜底采样率，启动探测到后端真实值后自动覆盖
-  voices_dir: null                   # 服务端参考音频目录（用于构建 文件名->文本 映射）
-  voices_json: null                  # 文件名 -> prompt_text 映射文件（json）
-  # voices:                          # 内联映射（优先级最高）
-  #   xiaoyu.wav: 你好，我是小宇。
-
+  base_url: http://127.0.0.1:50002
+  sample_rate: 24000
+  voices_dir: null
+  voices_json: null
+  voices: {}
 comfyui:
-  base_url: http://127.0.0.1:8188    # 真实 ComfyUI
-  serialize_concurrent: 1            # 同一时刻只放行 1 个 /prompt（单飞）
-  watch_interval: 2                  # 轮询真实 /history 间隔（秒）
-  watch_timeout: 900                 # 出图跟踪硬超时（秒），到时标失败并释放单飞槽位；0 = 不限时（不推荐）
-  watch_lost_grace: 30               # 提交后 N 秒起核对真实 /queue，判断 prompt 是否已被上游丢弃
-  watch_lost_confirm: 2              # 连续 N 次「既不在 /queue 也不在 /history」才判丢失（防误判）
-  progress_stream: true              # 订阅真实 ComfyUI /ws：真实进度（节点/步数）+ 卡死判据
-  client_id: null                    # 提交给 ComfyUI 的 client_id，null = 自动生成 taskhub-xxxxxxxx
-  free_vram_on_type_switch: true     # 类型切离 comfyui 后调用真实 /free 卸载模型释放显存（配合上面总开关）
-
+  base_url: http://127.0.0.1:8188
+  serialize_concurrent: 1
+  watch_interval: 2.0
+  watch_timeout: 900.0
+  watch_lost_grace: 30.0
+  watch_lost_confirm: 2
+  progress_stream: true
+  client_id: null
+  free_vram_on_type_switch: true
 monitoring:
-  gpu_threshold: 0.8                 # GPU 算力占用率 >80% 时自动降并发
-  vram_threshold: 0.25               # 可用显存比例 <25% 时自动降并发（防 OOM）
-  vram_min_free_gb: 1.0              # 可用显存 <1GB 时自动降并发（防 OOM）
-  interval_seconds: 2                # 采样间隔（秒）
-
-inspector:                           # 上游自检巡检（异常只告警；唯一主动处置是「上游丢弃 prompt」）
+  gpu_threshold: 0.8
+  vram_threshold: 0.25
+  vram_min_free_gb: 1.0
+  interval_seconds: 2.0
+inspector:
   enabled: true
-  interval: 10                       # 巡检周期（秒）
-  slow_factor: 3.0                   # 耗时 > 同类成功任务 P95 × 此系数 → 标红告警
-  slow_min_seconds: 60               # 基线阈值下限（秒），历史样本不足时兜底
-  stall_seconds: 240                 # 上游在跑但这么久没有任何进度事件 → 疑似卡住（告警）
-  history_hours: 24                  # 计算耗时基线用的历史窗口
-  baseline_ttl: 300                  # 耗时基线缓存有效期（秒）
-  system_stats_every: 3              # 每 N 轮巡检查一次上游 /system_stats（显存水位）
-
-nsfw:                                # 出图后自动送检 NSFW（独立服务 nsfw-check，X:/_WorkSpace/Mine/nsfw-check）
-  enabled: true                      # 总开关（ false = 完全关闭，零开销）
-  base_url: "http://127.0.0.1:8890"  # nsfw-check 服务地址（同机默认端口）
-  token: ""                          # nsfw-check 配置了 API_TOKEN 时填写
-  mode: "label"                      # label = 检测结论随 history 返回（entry['nsfw']），拦截交给调用方
-                                     # block = 违规图（action=block）不返回，插件直接收到「NSFW 拦截」失败
-  timeout: 25                        # 单次检测 HTTP 超时（秒）；CPU 推理建议 ≥ 25
-  wait_seconds: 15                   # 插件轮询 history 时等待检测完成的上限（秒）
-  output_dir: null                   # ComfyUI output 目录（如 "X:/ComfyUI/output"）。填写后以 file://
-                                     # 引用送检（同机不重复存图）；null 则由检测服务按 SAVE_MODE 落盘
-  prewarm: true                      # 送检前预热 nsfw-check 模型（消除卸载后的冷启动 ~4s -> ~0.45s；
-                                     # 已 loaded 会跳过。WebUI 设备面板也可手动 预热/卸载）
+  interval: 10.0
+  slow_factor: 3.0
+  slow_min_seconds: 60.0
+  stall_seconds: 240.0
+  history_hours: 24.0
+  baseline_ttl: 300.0
+  system_stats_every: 3
+nsfw:
+  enabled: true
+  base_url: http://127.0.0.1:8890
+  token: ''
+  mode: label
+  timeout: 25.0
+  wait_seconds: 15.0
+  output_dir: null
+  prewarm: true
+# ===== 外部服务面板（启动/停止/重启/状态监听） =====
+# command 用列表写，第一项是可执行文件或解释器；不要写 .bat（会弹 cmd 黑框）。
+# cwd / log 相对路径基于 TaskHub 根目录；port 用于识别“由第三方启动器拉起”的进程。
+services:
+  enabled: true
+  check_interval: 10           # 状态巡检周期（秒）
+  start_grace: 90              # 启动宽限期（秒）：期间不判异常、不告警
+  fail_threshold: 2            # 连续 N 次检测失败才判定服务异常
+  restart_window: 300          # 自动拉起统计窗口（秒）
+  restart_cooldown: 60         # 两次自动拉起最小间隔（秒）
+  max_restart_attempts: 3      # 窗口内最多自动拉起次数（0=关闭）
+  items:
+    - name: taskhub
+      label: TaskHub（本服务）
+      enabled: true
+      managed: false
+      self: true
+      autostart: false
+      auto_restart: false
+      health_url: http://127.0.0.1:9000/health
+      port: 9000
+      log: logs/services/taskhub.log
+    - name: comfyui
+      label: ComfyUI
+      enabled: true
+      managed: true
+      autostart: true
+      auto_restart: false      # 默认只告警，不自动拉起
+      cwd: D:/AI/ComfyUI-aki/ComfyUI-aki-v3/ComfyUI TE模式启动器 v7.2.0
+      command: ["ComfyUI_TE模式启动器.exe"]
+      health_url: http://127.0.0.1:8188/system_stats
+      port: 8188
+      process_match: ["ComfyUI_TE模式启动器.exe"]
+      log: logs/services/comfyui.log
+    - name: tts-serve
+      label: TTS-Serve（Qwen3 / CosyVoice）
+      enabled: true
+      managed: true
+      autostart: true
+      auto_restart: false
+      cwd: D:/AI/TTS_SERVE/tts_serve
+      command: [".venv-qwen3/Scripts/python.exe", "-m", "app.serve"]
+      health_url: http://127.0.0.1:50001/
+      port: 50001
+      log: logs/services/tts-serve.log
+    - name: nsfw-check
+      label: NSFW-Check
+      enabled: true
+      managed: true
+      autostart: true
+      auto_restart: false
+      cwd: D:/AI/nsfw-check
+      command: [".venv/Scripts/python.exe", "run.py"]
+      env:
+        DEVICE: cuda
+        PRECISION: bf16
+      health_url: http://127.0.0.1:8890/healthz
+      port: 8890
+      log: logs/services/nsfw-check.log
+# ===== 告警通道：Gotify 优先，邮件次之；默认关闭，填好参数后在面板里打开 =====
+alerts:
+  enabled: false
+  cooldown_seconds: 60
+  events:
+    down: true
+    up: false
+    restart_failed: true
+  channels:
+    gotify:
+      enabled: false
+      url: ''                  # 例如 http://127.0.0.1:80
+      token: ''
+      priority: 8
+    email:
+      enabled: false
+      host: ''
+      port: 465
+      ssl: true                # false 时按 starttls 决定是否 STARTTLS
+      starttls: false
+      user: ''
+      password: ''
+      from_addr: ''
+      to_addrs: []             # 多个收件人写列表

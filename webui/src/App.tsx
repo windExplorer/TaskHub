@@ -7,6 +7,7 @@ import type { TabId } from "./components/Header";
 import { DashboardPage } from "./components/DashboardPage";
 import { TasksPage } from "./components/TasksPage";
 import { StatsPage } from "./components/StatsPage";
+import { ServicePanel } from "./components/ServicePanel";
 import { ApiDocsPage } from "./components/ApiDocsPage";
 import { ConfigDialog } from "./components/ConfigDialog";
 import { ShutdownDialog } from "./components/ShutdownDialog";
@@ -54,6 +55,7 @@ export default function App() {
         {tab === "dash" && (
           <DashboardPage monitor={monitor} history={history} push={push} onNavigate={setTab} />
         )}
+        {tab === "services" && <ServicePanel push={push} />}
         {tab === "tasks" && <TasksPage />}
         {tab === "stats" && <StatsPage />}
         {tab === "docs" && <ApiDocsPage />}

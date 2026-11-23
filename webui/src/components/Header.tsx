@@ -17,10 +17,11 @@ import { Tooltip } from "./ui/Tooltip";
 
 const spring = { type: "spring", stiffness: 420, damping: 32 } as const;
 
-export type TabId = "dash" | "tasks" | "stats" | "docs";
+export type TabId = "dash" | "services" | "tasks" | "stats" | "docs";
 
 export const TABS: Array<{ id: TabId; label: string }> = [
   { id: "dash", label: "监控面板" },
+  { id: "services", label: "服务面板" },
   { id: "tasks", label: "全部任务" },
   { id: "stats", label: "统计" },
   { id: "docs", label: "API 文档" },

@@ -3,6 +3,8 @@ import type {
   DeviceResp,
   RuntimeConfig,
   StatsBrief,
+  ServicesConfigResp,
+  ServicesResp,
   StatsDetail,
   TasksPageData,
 } from "./types";
@@ -167,4 +169,37 @@ export async function shutdownService(): Promise<{ ok: boolean; stopping: boolea
 /** 落盘日志尾部（历史回填） */
 export async function fetchLogsTail(lines = 200): Promise<{ file: string; lines: string[]; error?: string }> {
   return request(`/logs/tail${qs({ lines })}`, { method: "GET" }, 10_000);
+}
+
+// ---------- 外部服务面板 ----------
+
+export async function fetchServices(): Promise<ServicesResp> {
+  return request("/services", { method: "GET" }, 15_000);
+}
+
+export type ServiceAction = "start" | "stop" | "restart";
+
+export async function serviceAction(name: string, action: ServiceAction): Promise<Record<string, any>> {
+  return request(`/services/${encodeURIComponent(name)}/${action}`, { method: "POST" }, 60_000);
+}
+
+export async function fetchServiceLogs(name: string, lines = 200): Promise<{ file: string; lines: string[] }> {
+  return request(`/services/${encodeURIComponent(name)}/logs${qs({ lines })}`,
+    { method: "GET" }, 10_000);
+}
+
+export async function fetchServicesConfig(): Promise<ServicesConfigResp> {
+  return request("/services/config", { method: "GET" }, 10_000);
+}
+
+export async function saveServicesConfig(data: ServicesConfigResp): Promise<{ ok: boolean; config_file: string }> {
+  return request("/services/config", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  }, 15_000);
+}
+
+export async function testAlerts(): Promise<{ ok: boolean; results: Record<string, string> }> {
+  return request("/services/alerts/test", { method: "POST" }, 30_000);
 }

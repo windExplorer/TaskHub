@@ -13,6 +13,7 @@ const API_PREFIXES = [
   "/self-check",
   "/stats",
   "/config",
+  "/services",
   "/queue",
   "/tasks",
 ];
