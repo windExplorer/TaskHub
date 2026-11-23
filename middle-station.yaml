@@ -53,8 +53,9 @@ nsfw:
 services:
   enabled: true
   check_interval: 10
-  start_grace: 90
-  fail_threshold: 2
+  start_grace: 120
+  fail_threshold: 3
+  health_timeout: 5
   restart_window: 300
   restart_cooldown: 60
   max_restart_attempts: 3
@@ -101,21 +102,23 @@ services:
     enabled: true
     managed: true
     autostart: true
-    auto_restart: true
+    auto_restart: false
     cwd: D:/AI/TTS_SERVE/tts_serve
     command:
     - .venv-qwen3/Scripts/python.exe
     - -m
     - app.serve
-    health_url: http://127.0.0.1:50001/
-    port: 50001
+    health_url: http://127.0.0.1:50002/
+    port: 50002
+    process_match:
+    - -m app.serve
     log: logs/services/tts-serve.log
   - name: nsfw-check
     label: NSFW-Check
     enabled: true
     managed: true
     autostart: true
-    auto_restart: true
+    auto_restart: false
     cwd: D:/AI/nsfw-check
     command:
     - .venv/Scripts/python.exe

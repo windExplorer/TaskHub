@@ -270,10 +270,14 @@ class ServiceManager:
             pass
 
     async def _probe(self, url: str) -> tuple:
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=3.0, follow_redirects=True)
         try:
-            r = await self._client.get(url, timeout=3.0)
+            timeout = float(self.config.get('health_timeout', 5.0))
+        except (TypeError, ValueError):
+            timeout = 5.0
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+        try:
+            r = await self._client.get(url, timeout=timeout)
             return (r.status_code < 400, f'http {r.status_code}')
         except Exception as e:  # noqa: BLE001
             return (False, type(e).__name__)
