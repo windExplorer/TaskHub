@@ -54,7 +54,8 @@ class ServerConfig:
     # 任务类型切换后、执行新任务前先清理残留显存（当前仅 ComfyUI 侧有卸载接口）
     vram_cleanup_on_type_switch: bool = True
     # 业务开关：拒绝接某类新任务（在跑的不受影响）。运行时改内存即生效。
-    tasks_enabled: Dict[str, bool] = field(default_factory=lambda: {'tts': True, 'comfyui': True})
+    tasks_enabled: Dict[str, bool] = field(
+        default_factory=lambda: {'tts': True, 'comfyui': True, 'nsfw': True})
 
 
 @dataclass
@@ -115,6 +116,8 @@ class NsfwConfig:
     token: str = ''
     mode: str = 'label'                        # label | block
     timeout: float = 25.0                      # 单次检测 HTTP 超时（秒）
+    # 入队等待超时（秒）：独立于 server.queue_wait，避免调大后影响 TTS 的 150s 读超时契约。
+    queue_wait: float = 60.0
     wait_seconds: float = 15.0                 # history 轮询等待检测完成的上限（秒）
     output_dir: str = ''                       # ComfyUI output 目录（可选）
     prewarm: bool = True                       # 送检前预热模型，消除卸载后的冷启动（~4s -> ~0.45s）
@@ -167,6 +170,7 @@ class Config:
         cfg.server.tasks_enabled = {
             'tts': bool(te.get('tts', True)),
             'comfyui': bool(te.get('comfyui', True)),
+            'nsfw': bool(te.get('nsfw', True)),
         }
 
         # tts
@@ -238,6 +242,8 @@ class Config:
         cfg.nsfw.token = _env('MIDDLE_NSFW_TOKEN') or n.get('token', cfg.nsfw.token)
         cfg.nsfw.mode = _env('MIDDLE_NSFW_MODE') or n.get('mode', cfg.nsfw.mode)
         cfg.nsfw.timeout = _env_float('MIDDLE_NSFW_TIMEOUT', float(n.get('timeout', cfg.nsfw.timeout)))
+        cfg.nsfw.queue_wait = _env_float(
+            'MIDDLE_NSFW_QUEUE_WAIT', float(n.get('queue_wait', cfg.nsfw.queue_wait)))
         cfg.nsfw.wait_seconds = _env_float(
             'MIDDLE_NSFW_WAIT_SECONDS', float(n.get('wait_seconds', cfg.nsfw.wait_seconds)))
         cfg.nsfw.output_dir = _env('MIDDLE_NSFW_OUTPUT_DIR') or n.get('output_dir', cfg.nsfw.output_dir)
@@ -304,6 +310,7 @@ class Config:
                 'token': self.nsfw.token,
                 'mode': self.nsfw.mode,
                 'timeout': self.nsfw.timeout,
+                'queue_wait': self.nsfw.queue_wait,
                 'wait_seconds': self.nsfw.wait_seconds,
                 'output_dir': self.nsfw.output_dir,
                 'prewarm': self.nsfw.prewarm,

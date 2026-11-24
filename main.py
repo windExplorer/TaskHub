@@ -245,15 +245,19 @@ async def _vram_cleanup_on_type_switch(prev_type: str, next_type: str):
     """任务类型切换时释放上游残留显存（由 Scheduler 在安全窗口调用）。
 
     显存残留主要来自 ComfyUI：出图完成后模型仍常驻显存，切到 TTS 时可能挤占
-    CosyVoice 的加载空间导致后续任务失败。CosyVoice 侧已自行释放，故这里只
-    处理「切离 comfyui」。清理失败由调度器捕获告警，不影响任务流转。
+    CosyVoice 的加载空间导致后续任务失败。CosyVoice 侧已自行释放。
+    NSFW 模型由 detect_task 在任务内预热；这里只负责切离时卸载让卡。
+    清理失败由调度器捕获告警，不影响任务流转。
     """
     if not cfg.server.vram_cleanup_on_type_switch:
         return
     if prev_type == 'comfyui' and cfg.comfyui.free_vram_on_type_switch:
         await comfy.free_vram()
-    # 显存托管联动：切离 comfyui 时顺带请 nsfw-check 也卸载模型（它与 ComfyUI 可能同卡）
-    if prev_type == 'comfyui' and nsfw_checker is not None:
+    if nsfw_checker is None or prev_type == next_type:
+        return
+    # 切到 nsfw 前不卸载（紧随其后的 detect_task 会预热），切离 nsfw 或 comfyui 时
+    # 请 nsfw-check 卸载模型，把显存让给上游（它与 ComfyUI 可能同卡）。
+    if next_type != 'nsfw' and prev_type in ('nsfw', 'comfyui'):
         await nsfw_checker.release()
 
 
@@ -400,6 +404,25 @@ async def _submit(task: Task, media_type: str = 'application/octet-stream',
         task, queue_wait=queue_wait, infer_timeout=infer_timeout)
     if code == 200:
         resp = Response(content=result, media_type=media_type)
+        resp.headers['X-Queue-Position'] = str(task.queue_position)
+        return resp
+    raise HTTPException(status_code=code, detail=err or f'http {code}')
+
+
+async def _submit_json(task: Task, queue_wait: Optional[float] = None,
+                       infer_timeout: Optional[float] = None) -> JSONResponse:
+    """入队并同步等待，结果为 JSON（NSFW 检测用）。
+
+    与 _submit 的区别：handler 已返回 dict，直接 JSONResponse；同样透传
+    X-Queue-Position 响应头。排队超时 429 / 执行超时 504 由 scheduler 统一给出。
+    """
+    if not cfg.server.tasks_enabled.get(task.task_type, True):
+        raise HTTPException(status_code=503, detail=f'{task.task_type} 业务已被 WebUI 关闭')
+    scheduler.add_task(task)
+    result, code, err = await scheduler.submit(
+        task, queue_wait=queue_wait, infer_timeout=infer_timeout)
+    if code == 200:
+        resp = JSONResponse(content=result)
         resp.headers['X-Queue-Position'] = str(task.queue_position)
         return resp
     raise HTTPException(status_code=code, detail=err or f'http {code}')
@@ -591,17 +614,37 @@ def _register_routes(app: FastAPI):
 
     @app.post('/nsfw/detect/simple')
     async def nsfw_detect_proxy_api(request: Request):
-        """插件指令远程检测中转：multipart 原样转发 nsfw-check /detect/simple。
+        """插件指令远程检测中转：multipart 原样入队，由调度器排队后转发检测服务。
 
-        插件无需配置 nsfw-check 地址/令牌——与本站送检共用同一 nsfw 配置，
-        Token 注入只发生在本站。nsfw-check 侧记 source=plugin-cmd（需 8890
-        重启后生效，旧版归 api）。"""
+        契约不变（multipart 入 / JSON 出 + X-Queue-Position），插件无感。
+        """
         if nsfw_checker is None:
             raise HTTPException(status_code=404, detail='nsfw checker is disabled')
         body = await request.body()
         ctype = request.headers.get('content-type', 'application/octet-stream')
-        status, payload = await nsfw_checker.proxy_detect(body, ctype)
-        return JSONResponse(payload, status_code=status)
+        source = ''
+        try:
+            text = body.decode('utf-8', 'ignore')
+            if 'name="source"' in text:
+                seg = text.split('name="source"', 1)[1].split('\r\n', 2)
+                source = seg[-1].strip() if len(seg) >= 3 else ''
+        except Exception:  # noqa: BLE001
+            pass
+        task = Task(
+            priority=0,
+            created_at=time.time(),
+            task_id=_new_id('nsfw'),
+            task_type='nsfw',
+            payload={'body': body, 'ctype': ctype, 'source': source},
+            handler=nsfw_checker.detect_task,
+            estimated_duration=8.0,
+            resource_weight=1.0,
+        )
+        return await _submit_json(
+            task,
+            queue_wait=cfg.nsfw.queue_wait,
+            infer_timeout=max(cfg.nsfw.timeout * 2 + 20, 60),
+        )
 
     @app.post('/nsfw/review')
     async def nsfw_review_proxy_api(request: Request):

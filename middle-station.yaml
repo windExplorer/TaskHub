@@ -11,6 +11,7 @@ server:
   tasks_enabled:
     tts: true
     comfyui: true
+    nsfw: true
 tts:
   base_url: http://127.0.0.1:50002
   sample_rate: 24000
@@ -47,6 +48,7 @@ nsfw:
   token: ''
   mode: label
   timeout: 25.0
+  queue_wait: 60.0
   wait_seconds: 15.0
   output_dir: null
   prewarm: true

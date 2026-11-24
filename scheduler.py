@@ -29,7 +29,7 @@ class Task:
     priority: int
     created_at: float
     task_id: str = field(compare=False)
-    task_type: str = field(compare=False)          # 'tts' | 'comfyui'
+    task_type: str = field(compare=False)          # 'tts' | 'comfyui' | 'nsfw'
     payload: Any = field(default=None, compare=False)
     resource_weight: float = field(default=1.0, compare=False)
     estimated_duration: float = field(default=60.0, compare=False)
@@ -135,6 +135,10 @@ class Scheduler:
         self._cleanup_lock = asyncio.Lock()   # max_concurrent>1 时串行化切换清理，避免并发卸载
 
         self._heap: List[Task] = []
+        # 显存暂不满足的资源敏感任务（当前仅 nsfw）。单独暂存而非放回堆顶，
+        # 避免它们阻塞后面不需要显存的 TTS/ComfyUI 任务。
+        self._deferred: List[Task] = []
+        self._deferred_check_at = 0.0   # 下次允许重试暂存量任务的时间（monotonic）
         self.tasks: Dict[str, Task] = {}
         # 内存保留的最近任务数护栏：self.tasks 只服务排队/插队/取消/展示，
         # 全量历史在 SQLite。长期运行不淘汰会让 position_of/queued_count/
@@ -287,6 +291,8 @@ class Scheduler:
         task = self.tasks.get(task_id)
         if task and task.status == 'queued':
             task.priority = priority
+            # 若该任务正因资源不足被暂存，先移出暂存区，避免重试时重复入堆。
+            self._deferred = [t for t in self._deferred if t is not task]
             # 惰性删除：旧堆条目保持原优先级，新条目优先弹出；
             # 已运行/已完成的旧条目在 worker 弹出时被跳过。
             heapq.heappush(self._heap, task)
@@ -332,8 +338,47 @@ class Scheduler:
             return max(self.gpu_scale_min_concurrent, int(self.max_concurrent * 0.5))
         return self.max_concurrent
 
+    def _task_resource_ready(self, task: Task) -> bool:
+        """任务级资源准入：nsfw 检测显存不足时保持 queued，不派发。
+
+        - 非 nsfw 恒 True（TTS 无需显存，ComfyUI 有自己的上游单飞）。
+        - 取不到显存数据（无 NVIDIA / total=0）时 True，退化为纯并发控制。
+        - 口径与 _effective_concurrent 一致：可用比例 < vram_threshold
+          或 可用绝对量 < vram_min_free_gb 即视为「不够」。
+        """
+        if task.task_type != 'nsfw':
+            return True
+        try:
+            free_gb, total_gb = self.vram_provider()
+        except Exception:
+            return True
+        if not total_gb or total_gb <= 0:
+            return True
+        return not (free_gb / total_gb < self.vram_threshold
+                    or free_gb < self.vram_min_free_gb)
+
+    def _requeue_ready_deferred(self):
+        """把显存已恢复的暂存任务放回堆；0.2s 限频避免忙等与重复探测。"""
+        if not self._deferred:
+            return
+        now = time.monotonic()
+        if now < self._deferred_check_at:
+            return
+        self._deferred_check_at = now + 0.2
+        remaining: List[Task] = []
+        for t in self._deferred:
+            if t.status != 'queued':
+                continue  # 排队超时已取消 / 已被终结
+            if self._task_resource_ready(t):
+                heapq.heappush(self._heap, t)
+                self._wakeup.set()
+            else:
+                remaining.append(t)
+        self._deferred = remaining
+
     async def _worker_loop(self):
         while not self._stopping:
+            self._requeue_ready_deferred()
             eff = self._effective_concurrent()
             if self.running_tasks >= eff:
                 # 槽位满：等完成事件的唤醒（_run_task/confirm_task 终结时会 set），
@@ -348,14 +393,21 @@ class Scheduler:
             if not self._heap:
                 self._wakeup.clear()
                 try:
-                    # 带超时兜底：避免 add_task 的 set() 与 clear() 竞态导致永久等待
-                    await asyncio.wait_for(self._wakeup.wait(), timeout=0.5)
+                    # 带超时兜底：避免 add_task 的 set() 与 clear() 竞态导致永久等待；
+                    # 有暂存任务时缩短到 0.2s，让显存恢复后能及时重试。
+                    await asyncio.wait_for(
+                        self._wakeup.wait(), timeout=0.2 if self._deferred else 0.5)
                 except asyncio.TimeoutError:
                     pass
                 continue
             task = heapq.heappop(self._heap)
             # 惰性删除的脏条目（已被插队复制 / 已取消 / 已运行）
             if task.status != 'queued':
+                continue
+            # 资源准入：显存不足的 nsfw 任务暂存起来，先派发后面不需要显存的任务。
+            # status 保持 queued（WebUI 仍显示排队中），queue_position 快照不变。
+            if not self._task_resource_ready(task):
+                self._deferred.append(task)
                 continue
             # 任务类型切换：在「上一任务已终结、新任务未派发」的安全窗口清理残留显存。
             # 仅当此刻无任何在跑任务时才做——否则并发下上游卸载模型会误伤正在执行的任务

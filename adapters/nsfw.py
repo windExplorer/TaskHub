@@ -97,6 +97,30 @@ class NsfwChecker:
             logger.warning('[nsfw] proxy detect failed: %s', e)
             return 502, {'ok': False, 'error': str(e)}
 
+    async def detect_task(self, task) -> dict:
+        """调度器 handler：把插件指令的检测请求作为任务执行。
+
+        task.payload = {'body': bytes, 'ctype': str}
+        返回 payload dict（直接对接 _submit_json 的 JSONResponse）。上游非 200 时
+        把 status 写到 task.status_code，scheduler.submit() 据此回传错误码；
+        同时回写 task.nsfw（带 available），让任务列表/WebUI 展示送检结论。
+        """
+        payload = task.payload or {}
+        body = bytes(payload.get('body') or b'')
+        ctype = str(payload.get('ctype') or 'application/octet-stream')
+        # 预热放在任务执行阶段（而非调度器类型切换钩子），避免阻塞整个 worker。
+        if self.prewarm:
+            await self.warm()
+        status, result = await self.proxy_detect(body, ctype)
+        task.status_code = status
+        if status != 200:
+            task.error = (str(result.get('error')) if isinstance(result, dict) else '') \
+                or f'upstream http {status}'
+        verdict = dict(result) if isinstance(result, dict) else {'ok': False, 'error': str(result)}
+        verdict['available'] = status == 200 and bool(verdict.get('ok', True))
+        task.nsfw = verdict
+        return verdict
+
     async def proxy_review(self, record_id: str, decision: str, note: str = '') -> Tuple[int, dict]:
         """人工复核结论写通中转：POST nsfw-check /records/{id}/review。
 

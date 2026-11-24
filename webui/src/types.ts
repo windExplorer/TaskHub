@@ -1,6 +1,6 @@
 /** 后端数据结构（对齐 scheduler.Task.to_dict 与各 API 响应字段） */
 
-export type TaskType = "tts" | "comfyui";
+export type TaskType = "tts" | "comfyui" | "nsfw";
 
 export type TaskStatus =
   | "queued"

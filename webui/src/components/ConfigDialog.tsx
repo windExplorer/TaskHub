@@ -68,6 +68,7 @@ const SECTIONS: Array<{ key: string; title: string; fields: Field[] }> = [
     fields: [
       ["enabled", "启用", "bool"], ["base_url", "检测服务地址", "str"],
       ["mode", "模式(label/block)", "str"], ["timeout", "检测超时(s)", "num"],
+      ["queue_wait", "排队超时(s)", "num"],
       ["wait_seconds", "等待检测(s)", "num"], ["output_dir", "ComfyUI output 目录", "str"],
       ["prewarm", "送检前预热", "bool"],
     ],
@@ -250,14 +251,13 @@ export function ConfigDialog({ open, onClose }: { open: boolean; onClose: () => 
                     <p className="mb-3 text-[11px] text-ink-3">
                       关闭后拒绝该类新任务（返回 503），进行中的任务不受影响。
                     </p>
-                    {(["tts", "comfyui"] as const).map((t) => {
+                    {(["tts", "comfyui", "nsfw"] as const).map((t) => {
                       const tasksEnabled = (draft.server?.tasks_enabled ?? {}) as Record<string, boolean>;
                       const cur = tasksEnabled[t] ?? true;
+                      const label = t === "tts" ? "TTS 语音" : t === "comfyui" ? "ComfyUI 绘图" : "涩图检测";
                       return (
                         <div key={t} className="flex items-center justify-between border-b border-line py-2 last:border-b-0">
-                          <span className="font-medium text-ink-2">
-                            {t === "tts" ? "TTS 语音" : "ComfyUI 绘图"}
-                          </span>
+                          <span className="font-medium text-ink-2">{label}</span>
                           <Switch
                             checked={cur}
                             onCheckedChange={() => {
@@ -267,7 +267,7 @@ export function ConfigDialog({ open, onClose }: { open: boolean; onClose: () => 
                               setSaved(false);
                               void handleSave(nextDraft);
                             }}
-                            ariaLabel={t === "tts" ? "TTS 语音任务" : "ComfyUI 绘图任务"}
+                            ariaLabel={`${label}任务`}
                           />
                         </div>
                       );

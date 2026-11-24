@@ -25,6 +25,7 @@ export const STATUS_META: Record<TaskStatus, ChipMeta> = {
 export const TYPE_META: Record<TaskType, { label: string; cls: string }> = {
   tts: { label: "语音", cls: "bg-info-bg text-info border-info/40" },
   comfyui: { label: "绘图", cls: "bg-accent-2-bg text-accent-2 border-accent-2/40" },
+  nsfw: { label: "涩图检测", cls: "bg-warn-bg text-warn border-warn/40" },
 };
 
 /** 自检异常码 → 中文 */
@@ -104,6 +105,7 @@ export const STATUS_COLOR: Record<TaskStatus, string> = {
 export const TYPE_COLOR: Record<TaskType, string> = {
   tts: "var(--info)",
   comfyui: "var(--accent-2)",
+  nsfw: "var(--warn)",
 };
 
 /** 原生表单控件统一观感 */
