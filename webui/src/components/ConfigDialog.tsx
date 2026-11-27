@@ -58,7 +58,8 @@ const SECTIONS: Array<{ key: string; title: string; fields: Field[] }> = [
     fields: [
       ["enabled", "启用", "bool"], ["interval", "巡检周期(s)", "num"],
       ["slow_factor", "超基线系数", "num"], ["slow_min_seconds", "基线下限(s)", "num"],
-      ["stall_seconds", "卡住告警(s)", "num"], ["history_hours", "历史窗口(h)", "num"],
+      ["stall_seconds", "卡住告警(s)", "num"], ["auto_stop_stalled", "卡住自动停止", "bool"],
+      ["history_hours", "历史窗口(h)", "num"],
       ["baseline_ttl", "基线缓存(s)", "num"], ["system_stats_every", "stats 巡检间隔(轮)", "num"],
     ],
   },

@@ -776,8 +776,18 @@ def _register_routes(app: FastAPI):
 
     @app.post('/tasks/{task_id}/cancel')
     async def cancel_task(task_id: str):
-        if not scheduler.cancel(task_id):
-            raise HTTPException(status_code=404, detail='task not found or not queued')
+        """排队任务直接取消；运行/等槽位的绘图任务停止上游并释放单飞槽位。"""
+        task = scheduler.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail='task not found')
+        if task.status == 'queued':
+            if not scheduler.cancel(task_id):
+                raise HTTPException(status_code=404, detail='task not found or not queued')
+        elif task.task_type == 'comfyui' and task.status in ('waiting', 'running'):
+            if not await comfy.stop_task(task):
+                raise HTTPException(status_code=404, detail='task not stoppable')
+        else:
+            raise HTTPException(status_code=404, detail='task not found or not queued/running')
         return {'ok': True, 'task_id': task_id}
 
     # ---- TTS 标准接口（docs/backend-api.md §2） ----

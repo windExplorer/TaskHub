@@ -325,15 +325,15 @@ def synthesize(text, voice="xiaoyu.wav", max_retry=3):
       {
         method: "POST",
         path: "/tasks/{task_id}/cancel",
-        title: "取消排队任务",
-        note: "不存在或非排队返回 404。",
+        title: "取消/停止任务",
+        note: "排队任务直接取消；运行/等槽位的绘图任务会中断真实 ComfyUI 正在执行的出图并释放单飞槽位（状态 cancelled / 499）。不存在或不可操作返回 404。",
         resp: `{ "ok": true, "task_id": "tts_xxx" }`,
       },
       {
         method: "GET",
         path: "/config",
         title: "当前生效配置（只读）",
-        note: "返回 server / tts / comfyui / monitoring / inspector 五组配置摘要与运行时值（含探测后的真实 sample_rate、提交给真实 ComfyUI 的 client_id）。与接口行为强相关的项：queue_wait(429 阈值)、infer_timeout(504 阈值)、comfyui.watch_timeout(单任务出图硬超时)、comfyui.watch_lost_grace/confirm(丢失判定)、comfyui.progress_stream、inspector.*(自检阈值)。修改请编辑 middle-station.yaml 后重启。",
+        note: "返回 server / tts / comfyui / monitoring / inspector 五组配置摘要与运行时值（含探测后的真实 sample_rate、提交给真实 ComfyUI 的 client_id）。与接口行为强相关的项：queue_wait(429 阈值)、infer_timeout(504 阈值)、comfyui.watch_timeout(单任务出图硬超时)、comfyui.watch_lost_grace/confirm(丢失判定)、comfyui.progress_stream、inspector.*(自检阈值，含 auto_stop_stalled 卡住自动停止，默认关闭)。修改请编辑 middle-station.yaml 后重启。",
       },
     ],
   },

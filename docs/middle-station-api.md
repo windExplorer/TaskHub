@@ -223,7 +223,7 @@ Query：`filename`、`subfolder`、`type`（通常 `type=output`）。响应为�
 | --- | --- | --- | --- |
 | `lost` | error | prompt 既不在上游 `/queue` 也不在 `/history`（上游重启/OOM 崩溃丢弃） | **是**：终结任务并释放单飞槽位 |
 | `slow` | warn | 耗时超过同类成功任务 P95 × `inspector.slow_factor`（下限 `slow_min_seconds`） | 否，仅告警 |
-| `stalled` | warn | 上游在跑但 `inspector.stall_seconds` 内没有任何进度事件（需 `/ws` 订阅在线） | 否，仅告警 |
+| `stalled` | warn / error | 上游在跑但 `inspector.stall_seconds` 内没有任何进度事件（需 `/ws` 订阅在线） | 默认否；`inspector.auto_stop_stalled=true` 时自动停止并释放槽位（默认关闭） |
 | `slot_wait` | warn | 等待单飞槽位过久（通常意味着上一个任务卡住） | 否 |
 | `upstream_external` | info | 上游有非本站已知任务在跑/排队（网页端提交或重启前遗留），说明资源被占用 | 否 |
 | `upstream_vram_low` | warn | 上游显存可用低于 `monitoring.vram_min_free_gb` | 否（调度器会降并发） |
@@ -347,9 +347,13 @@ Query 参数：
 
 把排队中任务提到指定优先级（数值越小越优先）。成功：`{"ok": true, "task_id": "...", "priority": -1}`；不存在或非排队：`404`。
 
-### 3.7 `POST /tasks/{task_id}/cancel` — 取消排队任务
+### 3.7 `POST /tasks/{task_id}/cancel` — 取消 / 停止任务
 
-成功：`{"ok": true, "task_id": "..."}`；不存在或非排队：`404`。
+- `queued`：直接取消，不提交上游。
+- `waiting` / `running` 的绘图任务：打协作取消位；若已提交上游，先向真实 ComfyUI 发 `/queue` delete（未执行的 prompt）与 `/interrupt`（正在执行的 prompt），再终结任务并释放单飞槽位。终态为 `cancelled`（status_code 499），插件轮询 `/history/{虚拟pid}` 立即拿到失败条目。
+- `/interrupt` 是全局中断，仅在巡检确认该 prompt 确实在真实上游执行时发出，避免误伤网页端提交的任务；上游不可达时仍尽力尝试一次。
+
+成功：`{"ok": true, "task_id": "..."}`；不存在或不可操作：`404`。
 
 ### 3.8 `GET /config` — 当前生效配置（只读）
 
@@ -373,6 +377,7 @@ Query 参数：
 | `inspector.interval` | 10 | 自检周期（秒） |
 | `inspector.slow_factor` / `slow_min_seconds` | 3.0 / 60 | `slow` 异常阈值：`max(60s, 同类 P95 × 3)` |
 | `inspector.stall_seconds` | 240 | `stalled` 异常阈值：上游在跑但这么久无进度事件 |
+| `inspector.auto_stop_stalled` | false | `stalled` 时是否自动停止绘图任务（默认关，避免误杀慢任务） |
 
 ### 3.9 `GET /self-check` — 上游自检详情
 

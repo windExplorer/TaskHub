@@ -39,6 +39,7 @@ inspector:
   slow_factor: 3.0
   slow_min_seconds: 60.0
   stall_seconds: 240.0
+  auto_stop_stalled: false   # stalled 时自动停绘图任务（默认关闭，需显式开启）
   history_hours: 24.0
   baseline_ttl: 300.0
   system_stats_every: 3

@@ -8,9 +8,10 @@
 - `GET /system_stats`：上游显存水位
 - 本站 DB 历史耗时：判断「这次是不是明显超时了」
 
-巡检发现的异常只做两件事：写日志、标在任务/面板上（`anomaly`）；**唯一会主动处置的是
-「上游已把 prompt 丢弃」**（终结任务并释放单飞槽位），因为此时任务已不可能成功，
-继续占着槽位会把整条流水线堵死。其余一律只告警，不杀任务（避免误杀长时间的合法出图）。
+巡检发现的异常默认只做两件事：写日志、标在任务/面板上（`anomaly`）；默认会主动处置的只有
+「上游已把 prompt 丢弃」（终结任务并释放单飞槽位），因为此时任务已不可能成功，
+继续占着槽位会把整条流水线堵死。`stalled` 可在 `inspector.auto_stop_stalled=true` 时自动停止
+（默认关闭，避免误杀慢任务）；其余一律只告警，不杀任务。
 """
 import asyncio
 import logging
@@ -30,6 +31,7 @@ class UpstreamInspector:
         self.slow_factor = float(ins.slow_factor)
         self.slow_min = float(ins.slow_min_seconds)
         self.stall_seconds = float(ins.stall_seconds)
+        self.auto_stop_stalled = bool(getattr(ins, 'auto_stop_stalled', False))
         self.history_hours = float(ins.history_hours)
         self.baseline_ttl = float(ins.baseline_ttl)
         self.system_stats_every = max(1, int(ins.system_stats_every))
@@ -246,9 +248,23 @@ class UpstreamInspector:
             if stream is not None and stream.connected and in_running \
                     and run_s > self.stall_seconds and now - last_event > self.stall_seconds:
                 keep.add(k_stall)
-                self._set(k_stall, 'warn', 'stalled',
-                          f'上游在跑但已 {now - last_event:.0f}s 没有进度事件（疑似卡住）；'
-                          f'累计运行 {run_s:.0f}s', task.task_id)
+                if self.auto_stop_stalled and task.task_type == 'comfyui':
+                    # 默认关闭；开启后把「疑似卡住」升级为自动停止（同一条 stop_task 路径）
+                    stopped = await self._comfy.stop_task(
+                        task, f'auto stopped by inspector: no progress for {now - last_event:.0f}s')
+                    if stopped:
+                        self._set(k_stall, 'error', 'stalled',
+                                  f'上游在跑但已 {now - last_event:.0f}s 没有进度事件，'
+                                  f'已自动停止并释放槽位；累计运行 {run_s:.0f}s',
+                                  task.task_id, sticky=120.0)
+                    else:
+                        self._set(k_stall, 'warn', 'stalled',
+                                  f'上游在跑但已 {now - last_event:.0f}s 没有进度事件（疑似卡住）；'
+                                  f'自动停止未生效（任务可能刚终结）', task.task_id)
+                else:
+                    self._set(k_stall, 'warn', 'stalled',
+                              f'上游在跑但已 {now - last_event:.0f}s 没有进度事件（疑似卡住）；'
+                              f'累计运行 {run_s:.0f}s', task.task_id)
             else:
                 self._clear(k_stall)
 

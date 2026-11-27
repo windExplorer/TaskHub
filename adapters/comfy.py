@@ -14,6 +14,8 @@
   重启/OOM 崩溃，prompt 被丢弃），grace 期满后连续确认即判失败。
   没有这条兜底时，被丢弃的 prompt 会让 _watch 永久轮询，单飞槽位被永久占用，
   后续所有任务（含 TTS）全部排队饿死 —— 这就是「任务跑了 5000+ 秒」的根因。
+- 用户/巡检停止：stop_task 先请求真实上游 /interrupt（+ /queue delete），再走
+  _finish 终结并释放槽位；等槽位/提交中停止由协作取消位在安全点生效。
 """
 import asyncio
 import json
@@ -243,6 +245,10 @@ class ComfyAdapter:
         if self._scheduler is not None:
             self._scheduler.set_task_status(task, 'waiting')
         await self.sem.acquire()
+        if task.cancel_requested:
+            # 等槽位期间被停止：立刻归还槽位，绝不提交给真实上游
+            self.sem.release()
+            return {'prompt_id': virtual_pid}
         if self._scheduler is not None:
             self._scheduler.set_task_status(task, 'running')
         try:
@@ -274,6 +280,9 @@ class ComfyAdapter:
         task.pending_confirm = True
         self._watch_tasks[virtual_pid] = asyncio.create_task(
             self._watch(virtual_pid, real_pid, self.sem))
+        if task.cancel_requested:
+            # 提交窗口内被停止：prompt 已经进真实上游，必须立刻停掉它
+            await self.stop_task(task, 'stopped by user')
         return data   # 真实 pid 仅在内部使用，对外返回虚拟 pid
 
     def _forward_payload(self, payload: dict) -> dict:
@@ -359,6 +368,65 @@ class ComfyAdapter:
             self._scheduler.confirm_task(task, status, code, error)
         # 映射条目延迟淘汰（插件拿结果的窗口内保留，之后防内存无界增长）
         self._evict_later(prompt_id, real_pid, self._MAPPING_TTL)
+
+    async def _stop_upstream(self, real_pid: Optional[str], timeout: float = 5.0) -> bool:
+        """请求真实 ComfyUI 停掉该 prompt：先删队列中未执行的，再打断正在执行的。
+
+        /interrupt 是全局中断，单飞模式下正在跑的只有一个；为避免误伤网页端提交的
+        任务，仅在 probe 确认 real_pid 确实在 running 时才发。上游不可达时仍尝试
+        一次（没有 prompt 在跑时无害），本地收尾不依赖它的结果。
+        """
+        ok = True
+        try:
+            probe = await self.upstream_probe(timeout=timeout)
+        except Exception:  # noqa: BLE001 - 探测失败走 best-effort
+            probe = {'reachable': False, 'running': set(), 'pending': set()}
+        reachable = bool(probe.get('reachable'))
+        if reachable and not real_pid:
+            return True
+        if reachable and real_pid in (probe.get('pending') or set()):
+            try:
+                resp = await self._client.post(
+                    f'{self.base_url}/queue', json={'delete': [real_pid]}, timeout=timeout)
+                if resp.status_code != 200:
+                    logger.warning('[comfyui] delete queued prompt %s http %s: %s',
+                                   real_pid, resp.status_code, resp.text[:200])
+                    ok = False
+            except httpx.RequestError as e:
+                logger.warning('[comfyui] delete queued prompt %s failed: %s', real_pid, e)
+                ok = False
+        if (not reachable) or (real_pid in (probe.get('running') or set())):
+            try:
+                resp = await self._client.post(f'{self.base_url}/interrupt', timeout=timeout)
+                if resp.status_code != 200:
+                    logger.warning('[comfyui] interrupt http %s: %s',
+                                   resp.status_code, resp.text[:200])
+                    ok = False
+                else:
+                    logger.info('[comfyui] interrupt sent for prompt %s', real_pid)
+            except httpx.RequestError as e:
+                logger.warning('[comfyui] interrupt failed: %s', e)
+                ok = False
+        return ok
+
+    async def stop_task(self, task: Task, reason: str = 'stopped by user') -> bool:
+        """用户/巡检停止绘图任务：尽量停掉真实上游，再终结本地任务并释放槽位。"""
+        virtual_pid = ((task.payload or {}).get('_virtual_pid')) or task.task_id
+        if virtual_pid in self._watchers:
+            if self.states.get(virtual_pid) in ('done', 'failed', 'cancelled', 'timeout'):
+                return False   # 已终结，避免把完成态改写成取消
+            real_pid = self.pid_map.get(virtual_pid)
+            await self._stop_upstream(real_pid)
+            self._finish(virtual_pid, 'cancelled', 499, reason)
+            return True
+        # 尚未拿到真实 prompt_id（等槽位 / 提交中）：打协作取消位，
+        # handler 会在下一个安全点退出，_run_task 的 finally 归还并发计数。
+        if task.status in ('waiting', 'running'):
+            if self._scheduler is not None:
+                return self._scheduler.request_stop(task, reason)
+            task.cancel_requested = True
+            return True
+        return task.status == 'cancelled'
 
     def abort_task(self, task: Task, code: int = 500, error: str = 'aborted by inspector') -> bool:
         """外部判定任务已不可救（如自检发现上游把 prompt 丢了）时终结它并释放槽位。"""

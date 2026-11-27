@@ -96,6 +96,7 @@ class InspectorConfig:
     slow_factor: float = 3.0                   # 耗时 > 同类任务基线 P95 × factor 视为异常（只是告警，不杀任务）
     slow_min_seconds: float = 60.0             # 基线阈值下限（秒），样本不足时用它兜底
     stall_seconds: float = 240.0               # 上游在跑但这么久没有任何进度事件 → 疑似卡住（告警）
+    auto_stop_stalled: bool = False            # stalled 时自动停止绘图任务（默认关，避免误杀慢任务）
     history_hours: float = 24.0                # 计算耗时基线用的历史窗口
     baseline_ttl: float = 300.0                # 耗时基线缓存有效期（秒）
     system_stats_every: int = 3                # 每 N 轮巡检查一次 /system_stats（上游显存）
@@ -227,6 +228,9 @@ class Config:
             'MIDDLE_INSPECTOR_SLOW_MIN', float(i.get('slow_min_seconds', cfg.inspector.slow_min_seconds)))
         cfg.inspector.stall_seconds = _env_float(
             'MIDDLE_INSPECTOR_STALL', float(i.get('stall_seconds', cfg.inspector.stall_seconds)))
+        cfg.inspector.auto_stop_stalled = _env_bool(
+            'MIDDLE_INSPECTOR_AUTO_STOP_STALLED',
+            bool(i.get('auto_stop_stalled', cfg.inspector.auto_stop_stalled)))
         cfg.inspector.history_hours = _env_float(
             'MIDDLE_INSPECTOR_HISTORY_HOURS', float(i.get('history_hours', cfg.inspector.history_hours)))
         cfg.inspector.baseline_ttl = _env_float(
@@ -300,6 +304,7 @@ class Config:
                 'slow_factor': self.inspector.slow_factor,
                 'slow_min_seconds': self.inspector.slow_min_seconds,
                 'stall_seconds': self.inspector.stall_seconds,
+                'auto_stop_stalled': self.inspector.auto_stop_stalled,
                 'history_hours': self.inspector.history_hours,
                 'baseline_ttl': self.inspector.baseline_ttl,
                 'system_stats_every': self.inspector.system_stats_every,

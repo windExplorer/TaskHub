@@ -47,6 +47,7 @@ class Task:
     future: Any = field(default=None, compare=False)
     started_event: Any = field(default=None, compare=False)
     pending_confirm: bool = field(default=False, compare=False)
+    cancel_requested: bool = field(default=False, compare=False)
     queue_position: int = field(default=0, compare=False)
     text_len: int = field(default=0, compare=False)
     progress: Dict = field(default_factory=dict, compare=False)
@@ -309,6 +310,30 @@ class Scheduler:
             return True
         return False
 
+    def request_stop(self, task: Task, reason: str = 'stopped by user') -> bool:
+        """用户/巡检请求停止一个已启动的任务（waiting / running）。
+
+        这里只做「协作取消」：打取消位并立刻把状态推到 cancelled 让 UI 有反馈。
+        真正的资源回收交给适配层的安全点：
+        - 尚未提交上游（等单飞槽位 / 正在提交）：handler 检查取消位后自行退出，
+          _run_task 的 finally 负责减并发计数；
+        - 已提交上游（pending_confirm）：comfy.stop_task 停真实 prompt 后走
+          _finish -> confirm_task 终结并释放单飞槽位。
+        """
+        if task.status not in ('waiting', 'running'):
+            return False
+        task.cancel_requested = True
+        task.error = reason
+        if not task.pending_confirm:
+            task.status = 'cancelled'
+            task.status_code = 499
+            task.finished_at = time.time()
+            self._emit_async(task)
+        else:
+            # 终态字段留给 confirm_task，避免 /history 看到半截状态
+            self.set_task_status(task, 'cancelled')
+        return True
+
     # ---------- 调度核心 ----------
 
     def _effective_concurrent(self) -> int:
@@ -457,6 +482,10 @@ class Scheduler:
             if task.pending_confirm:
                 # 已提交真实后端，任务保持 running，由 confirm_task() 终结
                 # （如 ComfyUI 出图完成 / 失败 / 超时）。
+                return
+            if task.status == 'cancelled':
+                # 用户停止（尚未提交上游）：状态与错误已由 request_stop 写好，
+                # 这里不能再改成 done/failed；并发计数由 finally 收尾。
                 return
             if task.status_code == 200:
                 task.status = 'done'

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowUp, X } from "lucide-react";
+import { ArrowUp, Square, X } from "lucide-react";
 
 import { ApiFailure, cancelTask, promoteTask } from "../api";
 import { SHOW_OPTIONS } from "../constants";
@@ -13,7 +13,7 @@ import { AnomalyBadge, NsfwBadge, ProgressCell, StatusChip, TypeChip, runSeconds
 
 const MAX_SHOW = 100;
 
-/** 监控面板的实时任务表（WS 驱动）：排队/运行秒每秒本地自增，queued 行可插队/取消。 */
+/** 监控面板的实时任务表（WS 驱动）：排队/运行秒每秒本地自增；queued 可插队/取消，运行中的绘图任务可停止。 */
 export function LiveTaskTable({ push }: { push: ToastPush }) {
   const { list, total } = useWsTasks();
   const [showAll, setShowAll] = useState(false);
@@ -39,18 +39,22 @@ export function LiveTaskTable({ push }: { push: ToastPush }) {
     }
   };
 
-  const act = async (taskId: string, op: "promote" | "cancel") => {
+  const act = async (taskId: string, op: "promote" | "cancel" | "stop") => {
     try {
       if (op === "promote") {
         await promoteTask(taskId);
         push("success", "已插队", `${taskId} 已提到队列最前`);
+      } else if (op === "stop") {
+        if (!window.confirm("确定停止该绘图任务？会同时中断真实 ComfyUI 正在执行的出图。")) return;
+        await cancelTask(taskId);
+        push("success", "已停止", `${taskId} 已停止并释放槽位`);
       } else {
         await cancelTask(taskId);
         push("success", "已取消", taskId);
       }
     } catch (e) {
       if (e instanceof ApiFailure && e.status === 404) {
-        push("warn", "操作无效", "任务不存在或已不在排队中");
+        push("warn", "操作无效", "任务不存在或已不可操作");
       } else {
         push("error", "操作失败", e instanceof Error ? e.message : String(e));
       }
@@ -101,6 +105,8 @@ export function LiveTaskTable({ push }: { push: ToastPush }) {
             ) : (
               visible.map((t) => {
                 const canAct = t.status === "queued";
+                const canStop =
+                  t.task_type === "comfyui" && (t.status === "running" || t.status === "waiting");
                 const qSec = t.started_at
                   ? Math.max(0, t.started_at - t.created_at)
                   : Math.max(0, now - t.created_at);
@@ -157,6 +163,16 @@ export function LiveTaskTable({ push }: { push: ToastPush }) {
                               </button>
                             </Tooltip>
                           </>
+                        )}
+                        {canStop && (
+                          <Tooltip content="停止任务（同时中断上游出图）">
+                            <button
+                              onClick={() => void act(t.task_id, "stop")}
+                              className="inline-flex items-center gap-0.5 rounded-md border border-line px-2 py-1 text-xs text-ink-2 transition-colors hover:border-err/40 hover:text-err"
+                            >
+                              <Square size={12} /> 停止
+                            </button>
+                          </Tooltip>
                         )}
                         {t.error && (
                           <span className="ml-1 max-w-[160px] truncate font-mono text-[10px] text-ink-3" title={t.error}>
